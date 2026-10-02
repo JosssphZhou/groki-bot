@@ -46,6 +46,11 @@ class TrackQuietAccessLogger(AccessLogger):
         )
 
     def log(self, request, response, time) -> None:
+        if response.status == 403 and (
+            request.path == "/track" or request.path.startswith("/debug/")
+        ):
+            # The local access middleware already emits a rate-limited warning.
+            return
         try:
             fmt_info = self._format_line(request, response, time)
             values = []
