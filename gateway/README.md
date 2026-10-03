@@ -352,6 +352,7 @@ reconnect the MCP client, after a change).
 | `STACKCHAN_GEMINI_VOICE` | `Kore` | Gemini voice name |
 | `STACKCHAN_GEMINI_MODEL` | `gemini-3.8-live` | Gemini Live model (set `gemini-3.1-flash-live-preview` to go back) |
 | `STACKCHAN_TOKEN` | empty | Shared secret with the robot; also protects `/capture` and `/debug/inject-text` |
+| `STACKCHAN_ALLOW_REMOTE_DEBUG` | off | `1` allows remote access to `/track` and `/debug/*`; startup logs a warning. Restart after changing. |
 | `HOST`, `WS_PORT`, `CAPTURE_PORT` | `0.0.0.0`, `8765`, `8766` | Listen address and ports |
 | `STACKCHAN_WAKE_WORD` | on | `0` disables the wake word gate |
 | `STACKCHAN_KWS_SCORE` | `7` | Higher makes the wake word easier to trigger |
@@ -379,6 +380,22 @@ reconnect the MCP client, after a change).
 | `STACKCHAN_GBOT_BIN` | `gbot` on PATH | Forwarding service: path to `gbot` |
 | `STACKCHAN_GBOT_HTTP_PORT` | `18770` | Forwarding service port (it always binds 127.0.0.1) |
 
+By default, `/track` and `/debug/*` accept only loopback peers (`127.0.0.1`,
+`::1`); other addresses receive HTTP 403. The gateway checks the socket peer
+address and ignores `X-Forwarded-For` and other proxy headers. Rejections log
+the peer address and path at most once every 30 seconds per HTTP application.
+
+To use the debug panel from another device, set `STACKCHAN_ALLOW_REMOTE_DEBUG=1`
+and restart. `true`, `yes`, and `on` also enable it (case-insensitive); all other
+values keep it off. This opens **both tracking and debug routes** to anyone who
+can reach the HTTP port, including the ability to submit face detections.
+`/debug/inject-text` still checks the configured bearer token after the address
+check. A reverse proxy on this computer counts as a local peer; protect these
+routes at the proxy if it accepts remote clients.
+
+The listen address remains `0.0.0.0` so the robot can upload photos. `/capture`,
+the WebSocket server, and `/demo/*` keep their existing network access rules.
+
 ## Safety
 
 - **Mac control is off by default.** With `STACKCHAN_MAC_CONTROL=1`, anyone
@@ -388,8 +405,9 @@ reconnect the MCP client, after a change).
   before destructive actions, but that is a model instruction, not a hard
   permission check.
 - **Set `STACKCHAN_TOKEN`.** Without it, any device on your network can
-  connect as the robot, and the `/debug/inject-text` endpoint accepts text
-  from anyone who can reach port 8766.
+  connect as the robot. The `/debug/inject-text` endpoint accepts text from
+  local callers without a token, or remote callers too when
+  `STACKCHAN_ALLOW_REMOTE_DEBUG` is enabled.
 - **The Grok Bot forwarding service binds 127.0.0.1 only.** Any program on
   this computer that can reach port 18770 can message your Grok Bot agents as
   you. Do not expose it to the network.
