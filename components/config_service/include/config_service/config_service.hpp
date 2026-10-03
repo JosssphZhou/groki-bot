@@ -266,6 +266,8 @@ struct DeviceConfig {
     // advertising name + Stack-chan- prefix on hostname fits the BLE scan
     // response (31 byte adv frame budget).
     std::string device_name;
+    // Language of the head-pat bubble. Saved through Apply; takes effect after reboot.
+    std::string device_language = "en";
     // Pre-shared password gating access to the settings transports. When
     // non-empty:
     //   * BLE: SHA-256(password) is folded into the HKDF salt on every session
@@ -296,7 +298,7 @@ enum class Error {
     CryptoRng,      // ctr_drbg seeding / random failure
 };
 
-// Read device config from NVS namespace "stackchan_cfg". Missing keys → empty string.
+// Read device config from NVS namespace "stackchan_cfg". Missing language defaults to English.
 DeviceConfig load();
 
 // Start NimBLE host + GATT server + advertising. Non-fatal on failure: caller logs and continues.

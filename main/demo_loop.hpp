@@ -22,6 +22,7 @@ struct DemoLoopArgs {
     stackchan::board::Board* board = nullptr; // for vibrate() / kind(); may be null in theory
     stackchan::board::Si12tTouch* touch = nullptr; // head sensor; null when absent
     std::string jtts_config_json;              // babble voice options
+    std::string device_language = "en";        // head-pat bubble language
     bool has_battery = false;                  // poll INA226 every 5 s
     bool btn_a_toggles_ui = false;             // StopWatch: BtnA opens/closes device_ui
     bool touch_gaze_follow = false;            // StopWatch: IMU axis swap to screen coords
