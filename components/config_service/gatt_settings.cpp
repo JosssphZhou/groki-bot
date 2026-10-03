@@ -354,6 +354,11 @@ static const ble_uuid128_t kAuthPasswordUuid = BLE_UUID128_INIT(
     0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
     0x2a, 0x4d, 0x1c, 0x7b, 0x28, 0xa0, 0xf0, 0xe3);
 
+// DeviceLanguage — encrypted R/W UTF-8 "en" or "zh"; applied after Save and restart.
+static const ble_uuid128_t kDeviceLanguageUuid = BLE_UUID128_INIT(
+    0x00, 0x1f, 0x4b, 0x8d, 0x5a, 0x2c, 0x6f, 0x9e,
+    0x2a, 0x4d, 0x1c, 0x7b, 0x2f, 0xa0, 0xf0, 0xe3);
+
 // --- Mutable state guarded by g_mutex ---
 static SemaphoreHandle_t g_mutex = nullptr;
 
@@ -407,6 +412,7 @@ static uint16_t g_lip_sync_mode_handle = 0;
 static uint16_t g_mic_lip_agc_handle = 0;
 static uint16_t g_barge_in_enabled_handle = 0;
 static uint16_t g_device_name_handle = 0;
+static uint16_t g_device_language_handle = 0;
 static uint16_t g_auth_password_handle = 0;
 static uint16_t g_avatar_bc_handle = 0;
 static AvatarBytecodeSink g_avatar_bc_sink = nullptr;
@@ -719,6 +725,18 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             }
             const std::uint8_t byte = g_active.barge_in_enabled ? 1 : 0;
             const bool ok = append_encrypted(ctxt->om, {&byte, 1});
+            xSemaphoreGive(g_mutex);
+            return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
+        }
+        if (attr_handle == g_device_language_handle) {
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            if (!g_session.is_established()) {
+                xSemaphoreGive(g_mutex);
+                return BLE_ATT_ERR_UNLIKELY;
+            }
+            const auto& language = g_active.device_language;
+            const bool ok = append_encrypted(
+                ctxt->om, {reinterpret_cast<const std::uint8_t*>(language.data()), language.size()});
             xSemaphoreGive(g_mutex);
             return ok ? 0 : BLE_ATT_ERR_UNLIKELY;
         }
@@ -1221,6 +1239,15 @@ static int gatt_access_cb(uint16_t /*conn_handle*/, uint16_t attr_handle,
             if (pt.size() != 1) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
             xSemaphoreTake(g_mutex, portMAX_DELAY);
             g_staging.set_num("barge-in", pt[0] != 0 ? 1 : 0);
+            xSemaphoreGive(g_mutex);
+            return 0;
+        }
+        if (attr_handle == g_device_language_handle) {
+            if (pt.size() != 2) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            std::string value(reinterpret_cast<const char*>(pt.data()), pt.size());
+            if (value != "en" && value != "zh") return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            xSemaphoreTake(g_mutex, portMAX_DELAY);
+            g_staging.set_str("device-language", std::move(value));
             xSemaphoreGive(g_mutex);
             return 0;
         }
@@ -1764,6 +1791,12 @@ static ble_gatt_chr_def kChrs[] = {
         .access_cb = gatt_access_cb,
         .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
         .val_handle = &g_barge_in_enabled_handle,
+    },
+    {
+        .uuid = &kDeviceLanguageUuid.u,
+        .access_cb = gatt_access_cb,
+        .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+        .val_handle = &g_device_language_handle,
     },
     {
         .uuid = &kDeviceNameUuid.u,

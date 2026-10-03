@@ -38,3 +38,8 @@ target_include_directories(avatar_test_overlay_publish PRIVATE
 target_link_libraries(avatar_test_overlay_publish PRIVATE pthread)
 target_compile_options(avatar_test_overlay_publish PRIVATE -Wall -Wextra)
 add_test(NAME overlay_publish COMMAND avatar_test_overlay_publish)
+
+add_executable(avatar_test_pat_bubble test_pat_bubble.cpp)
+target_include_directories(avatar_test_pat_bubble PRIVATE ${REPO_ROOT}/main)
+target_compile_options(avatar_test_pat_bubble PRIVATE -Wall -Wextra)
+add_test(NAME pat_bubble COMMAND avatar_test_pat_bubble)

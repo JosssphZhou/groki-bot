@@ -28,6 +28,7 @@
 #include "groki_motion/motion.hpp"
 #include "device_ui.hpp"
 #include "lt_timer.hpp"
+#include "pat_bubble.hpp"
 #include "screens.hpp"
 #include "settings_sinks.hpp"
 #include "speech.hpp"
@@ -485,7 +486,7 @@ constexpr const char* kTag = "stackchan";
                 // Petting shows shyness, not plain happiness.
                 head_pet_overlay_cmd = g_state->request_face_overlay(avatar::Expression::Affection, 0);
                 balloon_in_flight.store(true, std::memory_order_release);
-                g_state->set_balloon_text("摸摸♡", /*hold_ms=*/2200, [] {
+                g_state->set_balloon_text(pat_bubble_text(args.device_language), /*hold_ms=*/2200, [] {
                     balloon_in_flight.store(false, std::memory_order_release);
                 });
 
@@ -547,7 +548,7 @@ constexpr const char* kTag = "stackchan";
                 g_state->request_face_overlay(avatar::Expression::Affection,
                                               avatar::ExpressionController::kDefaultOverlayHoldMs);
                 balloon_in_flight.store(true, std::memory_order_release);
-                g_state->set_balloon_text("摸摸♡", /*hold_ms=*/2200, [] {
+                g_state->set_balloon_text(pat_bubble_text(args.device_language), /*hold_ms=*/2200, [] {
                     balloon_in_flight.store(false, std::memory_order_release);
                 });
 

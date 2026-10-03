@@ -100,6 +100,14 @@ jobs:
           cmake --build build-san
           ctest --test-dir build-san --output-on-failure
 
+      - name: config_service host tests
+        working-directory: components/config_service/test/host
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+
       - name: groki_motion host tests
         working-directory: components/groki_motion/test/host
         run: |

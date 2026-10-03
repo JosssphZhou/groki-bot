@@ -441,6 +441,11 @@ const I18N = {
     'btn.disconnect': 'Disconnect',
     'btn.saving': 'Saving…',
     'btn.restarting': 'Restarting…',
+    'deviceLanguage.label': 'Device language',
+    'deviceLanguage.hint': 'Language of the head-pat bubble only. Takes effect after Save and restart. The page language and conversation language stay independent.',
+    'deviceLanguage.unsupported': 'This firmware does not support device language. Update the firmware to use this setting.',
+    'deviceLanguage.readFail': 'Could not read device language: {msg}. Reconnect to try again.',
+    'deviceLanguage.written': 'Device language selected: {name}',
     'tab.conn': 'Connection',
     'tab.avatar': 'Avatar',
     'tab.audio': 'Audio',
@@ -843,6 +848,11 @@ const I18N = {
     'btn.disconnect': '断开',
     'btn.saving': '保存中…',
     'btn.restarting': '重启中…',
+    'deviceLanguage.label': '设备语言',
+    'deviceLanguage.hint': '只控制摸头气泡的语言，保存并重启后生效。与本页面的显示语言、对话语言相互独立。',
+    'deviceLanguage.unsupported': '当前固件不支持设备语言，请更新固件后使用。',
+    'deviceLanguage.readFail': '读取设备语言失败：{msg}。请重新连接后再试。',
+    'deviceLanguage.written': '已选择设备语言：{name}',
     'tab.conn': '连接',
     'tab.avatar': '形象',
     'tab.audio': '音频',
@@ -1425,6 +1435,13 @@ function initLangSwitch() {
     <option value="1" data-i18n="mode.jtts">Idle chatter (JttsRandom)</option>
     <option value="0" data-i18n="mode.lip">Mic lip sync (MicLipSync)</option>
   </select>
+
+  <label for="device-language" data-i18n="deviceLanguage.label">Device language</label>
+  <select id="device-language" aria-describedby="device-language-hint" disabled>
+    <option value="en">English</option>
+    <option value="zh">中文</option>
+  </select>
+  <p class="hint" id="device-language-hint" data-i18n="deviceLanguage.hint">Language of the head-pat bubble only. Takes effect after Save and restart. The page language and conversation language stay independent.</p>
 
   <label for="ssid">Wi-Fi SSID</label>
   <input type="text" id="ssid" maxlength="32" placeholder="MyNetwork">
@@ -2113,6 +2130,8 @@ const CHR_OPERATION_MODE = 'e3f0a025-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // on, a screen tap mid-reply interrupts the AI; off by default because
 // the capacitive pad fires false positives from incidental contact.
 const CHR_BARGE_IN_ENABLED = 'e3f0a026-7b1c-4d2a-9e6f-2c5a8d4b1f00';
+// DeviceLanguage — encrypted UTF-8 en/zh; staged until Save and restart.
+const CHR_DEVICE_LANGUAGE = 'e3f0a02f-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // DeviceName (R/W) — operator-set BLE advertising name + mDNS hostname seed.
 const CHR_DEVICE_NAME = 'e3f0a027-7b1c-4d2a-9e6f-2c5a8d4b1f00';
 // AuthPassword (write-only) — set/clears the BLE+HTTP auth gate. Empty body
@@ -2196,6 +2215,7 @@ const DIS_CHRS = {
 // --- State ---
 let bleDevice = null, bleServer = null, svc = null;
 let chrSsid = null, chrPass = null, chrKey = null, chrApply = null, chrStatus = null, chrKx = null, chrEn = null, chrRtpEn = null, chrJttsIdleEn = null, chrJtts = null, chrOtaCtrl = null, chrOtaData = null, chrProvider = null, chrGeminiKey = null, chrXiaozhiUrl = null, chrXiaozhiToken = null, chrFaceConfig = null, chrBattery = null, chrBatGauge = null, chrStartupArp = null, chrServoEnabled = null, chrMcpToken = null, chrLtConfig = null, chrServoLimits = null, chrServoRangeMode = null, chrServoPositions = null, chrBoardKind = null, chrWifiIp = null, chrWifiMac = null, chrAudioCtrl = null, chrAudioData = null, chrAudioCredit = null, chrAudioMetrics = null, chrLedState = null, chrMicLipGain = null, chrLedMouthSync = null, chrLipSyncMode = null, chrMicLipAgc = null, chrSpeakerVolume = null, chrJttsSay = null, chrOperationMode = null, chrAudioOutput = null, chrBargeIn = null, chrDeviceName = null, chrAuthPassword = null, chrAvatarBc = null;
+let chrDeviceLanguage = null;
 let boardKind = null; // null = unknown (older firmware), else 0/1/2 from BOARD_*
 let batteryPollTimer = null;  // setInterval handle while connected
 let jttsInitialJson = '';  // last read JSON, used to detect Apply-time changes
@@ -2216,6 +2236,8 @@ function setBleUi(connected) {
   setText(document.getElementById('ble-label'), connected ? 'status.connected' : 'status.disconnected');
   const applyBtn = document.getElementById('btn-apply');
   applyBtn.disabled = !connected;
+  const languageEl = document.getElementById('device-language');
+  languageEl.disabled = !(connected && chrDeviceLanguage && languageEl.dataset.initial !== undefined);
   // Reset label — a prior Apply may have left it on "Restarting…", which
   // sticks across reconnects without this.
   setText(applyBtn, 'btn.apply');
@@ -3443,6 +3465,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
       ['audioOutput',   CHR_AUDIO_OUTPUT],
       ['bargeIn',       CHR_BARGE_IN_ENABLED],
       ['deviceName',    CHR_DEVICE_NAME],
+      ['deviceLanguage', CHR_DEVICE_LANGUAGE],
       ['authPassword',  CHR_AUTH_PASSWORD],
       ['avatarBc',  CHR_AVATAR_BC],
     ];
@@ -3499,6 +3522,7 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
     chrAudioOutput = found.audioOutput ?? null;
     chrBargeIn = found.bargeIn ?? null;
     chrDeviceName = found.deviceName ?? null;
+    chrDeviceLanguage = found.deviceLanguage ?? null;
     chrAuthPassword = found.authPassword ?? null;
     chrAvatarBc = found.avatarBc ?? null;
     log(t('ble.chrsOk', { list: missing.length ? missing.join(', ') : 'none' }),
@@ -3664,6 +3688,8 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
         log(t('read.bargeInFail', { msg: e.message }), 'err');
       }
     }
+
+    await loadDeviceLanguage();
 
     // Device name (operator-set override; empty → device falls back to MAC).
     if (chrDeviceName) {
@@ -3865,8 +3891,36 @@ document.getElementById('btn-connect').addEventListener('click', async () => {
   }
 });
 
+// Read through the encrypted transport before enabling edits. A failed read
+// must not replace an existing device value with the form's English default.
+async function loadDeviceLanguage() {
+  const el = document.getElementById('device-language');
+  const hint = document.getElementById('device-language-hint');
+  el.disabled = true;
+  el.value = 'en';
+  delete el.dataset.initial;
+  if (!chrDeviceLanguage) {
+    setText(hint, 'deviceLanguage.unsupported');
+    return;
+  }
+  try {
+    const value = dec.decode(await readEncrypted(chrDeviceLanguage));
+    el.value = value === 'zh' ? 'zh' : 'en';
+    el.dataset.initial = el.value;
+    el.disabled = false;
+    setText(hint, 'deviceLanguage.hint');
+  } catch (e) {
+    setText(hint, 'deviceLanguage.readFail', { msg: e.message });
+    log(t('deviceLanguage.readFail', { msg: e.message }), 'err');
+  }
+}
+
 // --- Disconnect handler ---
 function onDisconnected() {
+  chrDeviceLanguage = null;
+  delete document.getElementById('device-language').dataset.initial;
+  document.getElementById('device-language').value = 'en';
+  setText(document.getElementById('device-language-hint'), 'deviceLanguage.hint');
   log(t('ble.disconnected'), 'err');
   setBleUi(false);
   clearInterval(batteryPollTimer); batteryPollTimer = null;
@@ -3932,6 +3986,7 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
   const btn = document.getElementById('btn-apply');
   btn.disabled = true;
   setText(btn, 'btn.saving');
+  let applyRequested = false;
 
   try {
     // Write only fields that have input (empty = unchanged). All payloads
@@ -3959,6 +4014,15 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
     if (xzToken && chrXiaozhiToken) {
       await writeEncrypted(chrXiaozhiToken, strToBytes(xzToken));
       log(t('w.xzToken'), 'ok');
+    }
+
+    const languageEl = document.getElementById('device-language');
+    if (chrDeviceLanguage && languageEl.dataset.initial !== undefined &&
+        languageEl.value !== languageEl.dataset.initial) {
+      await writeEncrypted(chrDeviceLanguage, strToBytes(languageEl.value));
+      log(t('deviceLanguage.written', {
+        name: languageEl.options[languageEl.selectedIndex].text,
+      }), 'ok');
     }
 
     // Provider: only write if changed from initial AND chr is present.
@@ -4148,13 +4212,14 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
     }
     log(t('apply.sending'));
     // Sentinel: single byte 0x01, encrypted like everything else.
+    applyRequested = true;
     await writeEncrypted(chrApply, new Uint8Array([0x01]));
     log(t('apply.done'), 'ok');
     setText(btn, 'btn.restarting');
     // Device reboots ~200 ms after Apply; disconnection event will fire shortly.
   } catch (e) {
     // A disconnection during/after Apply is expected (device restarted).
-    if (e.message && e.message.toLowerCase().includes('disconnect')) {
+    if (applyRequested && e.message && e.message.toLowerCase().includes('disconnect')) {
       log(t('apply.restarting'), 'ok');
       setText(btn, 'btn.restarting');
     } else {
