@@ -801,6 +801,7 @@ const I18N = {
     'apply.sending': 'Sending Apply…',
     'apply.done': 'Apply complete; the device will restart',
     'apply.restarting': 'Applied; restarting…',
+    'apply.unconfirmed': 'Save result unconfirmed. Reconnect to check.',
     'apply.error': 'Apply error: {msg}',
   },
   zh: {
@@ -1208,6 +1209,7 @@ const I18N = {
     'apply.sending': '正在发送 Apply…',
     'apply.done': 'Apply 完成，设备即将重启',
     'apply.restarting': '已应用，正在重启…',
+    'apply.unconfirmed': '保存结果未确认，请重新连接后检查',
     'apply.error': 'Apply 错误：{msg}',
   },
 };
@@ -4017,8 +4019,8 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
     }
 
     const languageEl = document.getElementById('device-language');
-    if (chrDeviceLanguage && languageEl.dataset.initial !== undefined &&
-        languageEl.value !== languageEl.dataset.initial) {
+    // Overwrite any language staged by an interrupted save with this selection.
+    if (chrDeviceLanguage && !languageEl.disabled && languageEl.dataset.initial !== undefined) {
       await writeEncrypted(chrDeviceLanguage, strToBytes(languageEl.value));
       log(t('deviceLanguage.written', {
         name: languageEl.options[languageEl.selectedIndex].text,
@@ -4218,10 +4220,11 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
     setText(btn, 'btn.restarting');
     // Device reboots ~200 ms after Apply; disconnection event will fire shortly.
   } catch (e) {
-    // A disconnection during/after Apply is expected (device restarted).
+    // A rejected Apply write does not confirm that the device saved or restarted.
     if (applyRequested && e.message && e.message.toLowerCase().includes('disconnect')) {
-      log(t('apply.restarting'), 'ok');
-      setText(btn, 'btn.restarting');
+      log(t('apply.unconfirmed'), 'err');
+      btn.disabled = !(bleDevice && bleDevice.gatt.connected);
+      setText(btn, 'btn.apply');
     } else {
       log(t('apply.error', { msg: e.message }), 'err');
       btn.disabled = false;
