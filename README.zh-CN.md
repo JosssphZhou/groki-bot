@@ -33,8 +33,8 @@ Groki Bot 桌面机器人（M5Stack CoreS3 加 Stack-chan 底座）的全部内�
 
 ### 用法 1：只刷固件
 
-1. **刷机。** 用桌面版 Chrome 或 Edge 打开刷机页 <https://sefuzhou770801-hub.github.io/groki-bot/>，USB-C 连上机器人，点 Connect 选串口，选最新版本和 `CoreS3` 板子，点 Flash。想把机器人恢复成新机状态就勾上「Erase flash before write」。页面连不上时，先让板子进入下载模式（见[下载模式](#下载模式)）。
-2. **首次配置。** 打开蓝牙设置页 <https://sefuzhou770801-hub.github.io/groki-bot/settings.html>（Web Bluetooth，仅桌面版 Chrome / Edge），点「BLE 连接」。
+1. **刷机。** 用桌面版 Chrome 或 Edge 打开刷机页 <https://josssphzhou.github.io/groki-bot/>，USB-C 连上机器人，点 Connect 选串口，选最新版本和 `CoreS3` 板子，点 Flash。想把机器人恢复成新机状态就勾上「Erase flash before write」。页面连不上时，先让板子进入下载模式（见[下载模式](#下载模式)）。
+2. **首次配置。** 打开蓝牙设置页 <https://josssphzhou.github.io/groki-bot/settings.html>（Web Bluetooth，仅桌面版 Chrome / Edge），点「BLE 连接」。
    - 「连接」标签页：填 Wi-Fi 名称和密码。机器人只支持 2.4 GHz Wi-Fi。
    - 「对话」标签页：选对话服务商（「OpenAI Realtime」或「Google Gemini Live」），填对应的 API 密钥。
    - 点「保存并重启」。
@@ -181,7 +181,7 @@ Takao Base 使用同一份 `cores3` 固件：舵机走 Port A（TX GPIO 2 / RX G
 镜像是 `espressif/idf:release-v5.5`。第一次拉取约 14 GB。官方镜像里没有 Node，Makefile 会在容器内自动安装 Node.js 18+。产物在 `build-cores3/`。
 
 ```sh
-git clone https://github.com/sefuzhou770801-hub/groki-bot.git
+git clone https://github.com/JosssphZhou/groki-bot.git
 cd groki-bot
 git submodule update --init --recursive
 tools/apply-m5-patches.sh                    # 给 M5Unified 打一行补丁
@@ -197,14 +197,14 @@ make flash BOARD=cores3 PORT=/dev/cu.usbmodem1101     # macOS 示例
 make monitor BOARD=cores3 PORT=/dev/cu.usbmodem1101
 ```
 
-`make flash` 需要本机已安装 ESP-IDF（会加载 IDF 环境再调用 `idf.py flash`）。没有本机 IDF 时，用刷机页刷仓库已发布的版本：<https://sefuzhou770801-hub.github.io/groki-bot/>。该页面读取 GitHub Release，不能直接选 `build-cores3/` 里的文件。
+`make flash` 需要本机已安装 ESP-IDF（会加载 IDF 环境再调用 `idf.py flash`）。没有本机 IDF 时，用刷机页刷仓库已发布的版本：<https://josssphzhou.github.io/groki-bot/>。该页面读取 GitHub Release，不能直接选 `build-cores3/` 里的文件。
 
 ### 本机 ESP-IDF
 
 环境：ESP-IDF 5.5（按 5.5.4 验证）。按 Espressif 文档安装，在 IDF 源码目录执行 `./install.sh esp32s3`，再 `source export.sh`。Makefile 默认 `IDF_PATH=$(HOME)/esp-idf/5.5.4`。编译机的 `PATH` 里需要有 Node.js 18+（CMake 配置阶段就会找 `node`，用来把 `.avdsl` 编成字节码；编译器脚本在 `tools/avatar_dsl/`）。系统 `python3` 若是 3.14，IDF 5.5 会去找对应的虚拟环境，未安装时 `make` 会直接失败。
 
 ```sh
-git clone https://github.com/sefuzhou770801-hub/groki-bot.git
+git clone https://github.com/JosssphZhou/groki-bot.git
 cd groki-bot
 git submodule update --init --recursive
 tools/apply-m5-patches.sh                    # 给 M5Unified 打一行补丁
@@ -226,8 +226,8 @@ OpenAI / Gemini 的 API 密钥不编进固件，经 BLE / Wi-Fi 设置页在运�
 
 用浏览器写入已发布固件（Chrome / Edge）：
 
-- **刷机**：<https://sefuzhou770801-hub.github.io/groki-bot/>
-- **蓝牙设置**：<https://sefuzhou770801-hub.github.io/groki-bot/settings.html>（Web Bluetooth，仅桌面版 Chrome / Edge）
+- **刷机**：<https://josssphzhou.github.io/groki-bot/>
+- **蓝牙设置**：<https://josssphzhou.github.io/groki-bot/settings.html>（Web Bluetooth，仅桌面版 Chrome / Edge）
 - **Wi-Fi 设置**：设备连上 Wi-Fi 后访问 `http://stackchan-XXXXXX.local/`（mDNS）
 - **iOS / SoftAP**：进入 AP 模式后，用 iPhone 相机扫 LCD 上的 Wi-Fi 二维码，captive portal 会打开设置页。CoreS3 / StopWatch 点屏幕右上角打开设备界面，在操作页选「AP 模式」；AtomS3R / AtomS3 短按 BtnA 打开状态层，长按循环切换 `operation_mode`。
 
@@ -243,7 +243,7 @@ Submodule（`components/M5GFX` / `components/M5Unified` / `components/tl_expecte
 
 **眼环数据（非商业）**：`main/aora_ring_data.hpp` 由 `tools/aora_rings/convert.mjs` 从 [aora-bot](https://github.com/sam70361/aora-bot) 的 `emotion-ball/` 转换生成（Copyright (c) 2026 sam70361）。它和 `main/aora_face.hpp` 里的动画参数按 Emotion Ball 社区许可使用，只允许非商业用途。许可全文、版权声明和上游 NOTICE.md 放在 [third_party/emotion-ball/](third_party/emotion-ball/)。本项目没有使用球形角色的视觉形象。如需商用本固件，要向上游作者取得商业授权，或替换这份数据。
 
-HMM 语音合成使用的 **hts_engine API**（Modified BSD / 名古屋工业大学·东京工业大学）与同捆 **HMM 语音 "Mei"**（CC BY 3.0 / 名古屋工业大学·MMDAgent Project Team）等第三方归属，同样汇总在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。HTML 版：<https://sefuzhou770801-hub.github.io/groki-bot/licenses.html>。
+HMM 语音合成使用的 **hts_engine API**（Modified BSD / 名古屋工业大学·东京工业大学）与同捆 **HMM 语音 "Mei"**（CC BY 3.0 / 名古屋工业大学·MMDAgent Project Team）等第三方归属，同样汇总在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。HTML 版：<https://josssphzhou.github.io/groki-bot/licenses.html>。
 
 ## 致谢
 

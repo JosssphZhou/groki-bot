@@ -33,7 +33,7 @@ Never let the gateway take the robot's serial port in tests or local runs: set `
 - Files that came from upstream keep their `SPDX-FileCopyrightText: 2026 Kenta IDA <fuga@fugafuga.org>` line. Do not remove it.
 - New files use:
   ```cpp
-  // SPDX-FileCopyrightText: 2026 sefuzhou770801-hub
+  // SPDX-FileCopyrightText: 2026 Joseph Zhou
   // SPDX-License-Identifier: BSL-1.0
   ```
 - `main/aora_ring_data.hpp` and `main/aora_face.hpp` carry Emotion Ball data under a non-commercial license. See `third_party/emotion-ball/` and `THIRD_PARTY_NOTICES.md`.

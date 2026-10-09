@@ -45,7 +45,7 @@ Groki Bot 固件自己就能对话：刷好固件，在设置页填上自己的 
 ## 2. 安装网关
 
 ```bash
-git clone https://github.com/sefuzhou770801-hub/groki-bot.git
+git clone https://github.com/JosssphZhou/groki-bot.git
 cd groki-bot/gateway
 uv sync --all-extras
 cp .env.example .env
@@ -133,7 +133,7 @@ Claude Desktop 在 `claude_desktop_config.json` 里加入下面的配置（路�
 
 ## 4. 让机器人连上网关
 
-在 Groki Bot 蓝牙设置页（<https://sefuzhou770801-hub.github.io/groki-bot/settings.html>，桌面版 Chrome 或 Edge）的「对话」标签页：
+在 Groki Bot 蓝牙设置页（<https://josssphzhou.github.io/groki-bot/settings.html>，桌面版 Chrome 或 Edge）的「对话」标签页：
 
 1. 服务商选「XiaoZhi 服务器」。
 2. 「XiaoZhi 服务器 URL」填 `ws://<电脑的局域网 IP>:8765`（macOS 用 `ipconfig getifaddr en0` 查 IP，Linux 用 `hostname -I`）。

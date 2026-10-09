@@ -20,7 +20,7 @@ SPDX-License-Identifier: BSL-1.0
 - **エンジン**: ファーム内 `components/avatar_vm/` (C++20 / `tl::expected`)、
   WASM プレビュー (`avatar_module.js`) でも同じ VM が動く
 - **配信**: Wi-Fi 経由の `POST /api/avatar-dsl` で NVS に保存 → 即適用
-- **デフォルト顔**: [assets/grok_face.avdsl](https://github.com/sefuzhou770801-hub/groki-bot/blob/main/assets/grok_face.avdsl)
+- **デフォルト顔**: [assets/grok_face.avdsl](https://github.com/JosssphZhou/groki-bot/blob/main/assets/grok_face.avdsl)
   (ビルド時にコンパイルされ firmware に embed。`default_face.avdsl` はプリセットとして残る)
 
 ---
@@ -29,7 +29,7 @@ SPDX-License-Identifier: BSL-1.0
 
 ### ブラウザ プレビュー (`avatar.html`)
 
-[Web プレビュー](https://sefuzhou770801-hub.github.io/groki-bot/avatar.html) を開くと
+[Web プレビュー](https://josssphzhou.github.io/groki-bot/avatar.html) を開くと
 画面右側に「顔描画 DSL — 編集して即時反映」エディタがある。
 
 1. テキスト エリアの内容を編集
@@ -300,7 +300,7 @@ end
 ### 5.4 完全な置換版 (デフォルト顔)
 
 `face/eye/eyebrow/mouth/effect.cpp` を 1 対 1 で写した完全版が
-[`assets/default_face.avdsl`](https://github.com/sefuzhou770801-hub/groki-bot/blob/main/assets/default_face.avdsl)
+[`assets/default_face.avdsl`](https://github.com/JosssphZhou/groki-bot/blob/main/assets/default_face.avdsl)
 にある (~ 200 行)。新規顔を書くときの参考に。
 
 ---
@@ -308,9 +308,9 @@ end
 ## 6. バイトコード仕様 (`.avbc` ファイル形式)
 
 すべて **リトル エンディアン**。生成は JS コンパイラ
-([`tools/avatar_dsl/compile.js`](https://github.com/sefuzhou770801-hub/groki-bot/blob/main/tools/avatar_dsl/compile.js))、
+([`tools/avatar_dsl/compile.js`](https://github.com/JosssphZhou/groki-bot/blob/main/tools/avatar_dsl/compile.js))、
 デコード + 実行は C++ VM
-([`components/avatar_vm/`](https://github.com/sefuzhou770801-hub/groki-bot/tree/main/components/avatar_vm))。
+([`components/avatar_vm/`](https://github.com/JosssphZhou/groki-bot/tree/main/components/avatar_vm))。
 
 ### 6.1 ヘッダ (16 バイト固定)
 
@@ -446,8 +446,8 @@ end
 | 0x1E | `cheek_off_y` | 0x1F | `expr_from` | 0x20 | `expr_blend` |
 | 0x21 | `expr_hold_to` | 0x22 | `expr_hold_blend` | | |
 
-> 真実源: [components/avatar_vm/include/avatar_vm/opcodes.hpp](https://github.com/sefuzhou770801-hub/groki-bot/blob/main/components/avatar_vm/include/avatar_vm/opcodes.hpp)
-> (C++ 側) / [tools/avatar_dsl/opcodes.js](https://github.com/sefuzhou770801-hub/groki-bot/blob/main/tools/avatar_dsl/opcodes.js) (JS 側 ミラー)
+> 真実源: [components/avatar_vm/include/avatar_vm/opcodes.hpp](https://github.com/JosssphZhou/groki-bot/blob/main/components/avatar_vm/include/avatar_vm/opcodes.hpp)
+> (C++ 側) / [tools/avatar_dsl/opcodes.js](https://github.com/JosssphZhou/groki-bot/blob/main/tools/avatar_dsl/opcodes.js) (JS 側 ミラー)
 
 ### 6.6 実行モデル / リソース制限
 
@@ -484,13 +484,13 @@ end
 | ステップ | ツール | 出力 |
 |---|---|---|
 | 1. DSL を書く | エディタ (テキスト) | `face.avdsl` |
-| 2. ブラウザ プレビュー | [`avatar.html`](https://sefuzhou770801-hub.github.io/groki-bot/avatar.html) | 即時 |
+| 2. ブラウザ プレビュー | [`avatar.html`](https://josssphzhou.github.io/groki-bot/avatar.html) | 即時 |
 | 3. バイトコード化 | ブラウザ「.avbc ダウンロード」 or `node tools/avatar_dsl/cli.mjs face.avdsl face.avbc` | `face.avbc` |
 | 4. 実機書込み | `curl -X POST --data-binary @face.avbc http://stackchan-XXXXXX.local/api/avatar-dsl` | 即時適用 + NVS 保存 |
 | 5. 戻し | `curl -X POST http://stackchan-XXXXXX.local/api/avatar-dsl/reset` | embedded default に復帰 |
 
 ファーム ビルドに**ビルト イン**したい場合は
-[`assets/default_face.avdsl`](https://github.com/sefuzhou770801-hub/groki-bot/blob/main/assets/default_face.avdsl)
+[`assets/default_face.avdsl`](https://github.com/JosssphZhou/groki-bot/blob/main/assets/default_face.avdsl)
 を書き換えて `make build BOARD=<board>` するだけ。CMake が `node cli.mjs` を
 呼んで `default_face.avbc` を生成 → `EMBED_FILES` でファームに埋込む。
 
@@ -510,12 +510,12 @@ end
 
 ## 9. リファレンス
 
-- ソース: <https://github.com/sefuzhou770801-hub/groki-bot>
-- DSL コンパイラ (JS): [`tools/avatar_dsl/`](https://github.com/sefuzhou770801-hub/groki-bot/tree/main/tools/avatar_dsl)
-- VM (C++): [`components/avatar_vm/`](https://github.com/sefuzhou770801-hub/groki-bot/tree/main/components/avatar_vm)
-- デフォルト顔: [`assets/default_face.avdsl`](https://github.com/sefuzhou770801-hub/groki-bot/blob/main/assets/default_face.avdsl)
-- ブラウザ プレビュー: <https://sefuzhou770801-hub.github.io/groki-bot/avatar.html>
-- Web フラッシャ: <https://sefuzhou770801-hub.github.io/groki-bot/>
-- 設定ページ: <https://sefuzhou770801-hub.github.io/groki-bot/settings.html>
+- ソース: <https://github.com/JosssphZhou/groki-bot>
+- DSL コンパイラ (JS): [`tools/avatar_dsl/`](https://github.com/JosssphZhou/groki-bot/tree/main/tools/avatar_dsl)
+- VM (C++): [`components/avatar_vm/`](https://github.com/JosssphZhou/groki-bot/tree/main/components/avatar_vm)
+- デフォルト顔: [`assets/default_face.avdsl`](https://github.com/JosssphZhou/groki-bot/blob/main/assets/default_face.avdsl)
+- ブラウザ プレビュー: <https://josssphzhou.github.io/groki-bot/avatar.html>
+- Web フラッシャ: <https://josssphzhou.github.io/groki-bot/>
+- 設定ページ: <https://josssphzhou.github.io/groki-bot/settings.html>
 
 ライセンス: BSL-1.0 (リポジトリと同じ)

@@ -17,8 +17,8 @@ BLE / Wi-Fi / SoftAP の 3 経路設定、デバイス側 OTA をサポートし
 
 GitHub Releases に置かれたファームウェアをブラウザから書き込めます (Chrome / Edge):
 
-- **書き込み**: <https://sefuzhou770801-hub.github.io/groki-bot/>
-- **BLE 設定**: <https://sefuzhou770801-hub.github.io/groki-bot/settings.html> (Web Bluetooth、デスクトップ Chrome / Edge のみ)
+- **書き込み**: <https://josssphzhou.github.io/groki-bot/>
+- **BLE 設定**: <https://josssphzhou.github.io/groki-bot/settings.html> (Web Bluetooth、デスクトップ Chrome / Edge のみ)
 - **Wi-Fi 設定**: デバイスを Wi-Fi に繋いだ後 `http://stackchan-XXXXXX.local/` (mDNS)
 - **iOS / SoftAP 設定**: 本体ボタン (boards により方法が異なる、後述) で AP モードに入り、
   LCD に表示される Wi-Fi QR を iPhone Camera で読む → captive portal で設定ページが自動表示
@@ -117,7 +117,7 @@ Docker でのビルドを推奨します。ホストに ESP-IDF を入れる必�
 を自動インストールします。成果物は `build-cores3/` です。
 
 ```sh
-git clone https://github.com/sefuzhou770801-hub/groki-bot.git
+git clone https://github.com/JosssphZhou/groki-bot.git
 cd groki-bot
 git submodule update --init --recursive
 tools/apply-m5-patches.sh                    # M5Unified の 1 行修正を適用
@@ -141,7 +141,7 @@ make monitor BOARD=cores3 PORT=/dev/ttyACM0
 `make flash` にはホスト側の ESP-IDF が必要です（IDF 環境を読み込んでから
 `idf.py flash`）。ホストに IDF が無い場合は、公開済みリリースをブラウザ
 書き込みページで焼いてください:
-<https://sefuzhou770801-hub.github.io/groki-bot/>。
+<https://josssphzhou.github.io/groki-bot/>。
 このページは GitHub Release を読むだけで、`build-cores3/` のファイルを
 直接選べません。
 
@@ -156,7 +156,7 @@ make monitor BOARD=cores3 PORT=/dev/ttyACM0
 IDF 5.5 は対応する仮想環境を探し、未導入なら make はすぐ失敗します。
 
 ```sh
-git clone https://github.com/sefuzhou770801-hub/groki-bot.git
+git clone https://github.com/JosssphZhou/groki-bot.git
 cd groki-bot
 git submodule update --init --recursive
 tools/apply-m5-patches.sh                    # M5Unified の 1 行修正を適用
@@ -244,7 +244,7 @@ HMM 音声合成に使う **hts_engine API** (Modified BSD / 名古屋工業大�
 Project Team) をはじめとする第三者コンポーネントの帰属表示は
 **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)** にまとめています。
 HTML 版 (Web フラッシャー・設定ページからも参照可):
-<https://sefuzhou770801-hub.github.io/groki-bot/licenses.html>。
+<https://josssphzhou.github.io/groki-bot/licenses.html>。
 
 ## 謝辞
 

@@ -71,7 +71,7 @@ joins your Wi-Fi.
 ## 2. Install the gateway
 
 ```bash
-git clone https://github.com/sefuzhou770801-hub/groki-bot.git
+git clone https://github.com/JosssphZhou/groki-bot.git
 cd groki-bot/gateway
 uv sync --all-extras
 cp .env.example .env
@@ -182,7 +182,7 @@ log, and <http://127.0.0.1:8766/debug/status> returns JSON.
 ## 4. Point the robot at the gateway
 
 In the Groki Bot BLE settings page
-(<https://sefuzhou770801-hub.github.io/groki-bot/settings.html>, desktop Chrome
+(<https://josssphzhou.github.io/groki-bot/settings.html>, desktop Chrome
 or Edge), tab "对话" (Conversation):
 
 1. Provider: "XiaoZhi 服务器" (XiaoZhi server).

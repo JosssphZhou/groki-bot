@@ -63,10 +63,10 @@ wakeword = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/sefuzhou770801-hub/groki-bot"
-Repository = "https://github.com/sefuzhou770801-hub/groki-bot"
-Issues = "https://github.com/sefuzhou770801-hub/groki-bot/issues"
-Documentation = "https://github.com/sefuzhou770801-hub/groki-bot/blob/main/docs/architecture.md"
+Homepage = "https://github.com/JosssphZhou/groki-bot"
+Repository = "https://github.com/JosssphZhou/groki-bot"
+Issues = "https://github.com/JosssphZhou/groki-bot/issues"
+Documentation = "https://github.com/JosssphZhou/groki-bot/blob/main/docs/architecture.md"
 Upstream = "https://github.com/kisaragi-mochi/stackchan-mcp"
 
 [project.scripts]

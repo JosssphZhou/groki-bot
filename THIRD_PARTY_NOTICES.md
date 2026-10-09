@@ -2,7 +2,7 @@
 
 Groki Bot's own source code is distributed under the Boost Software License 1.0 ([LICENSE](LICENSE)), Copyright (c) 2026 Kenta IDA and Copyright (c) 2026 sefuzhou770801-hub. The exception is the gateway in [gateway/](gateway/), which is a fork of an MIT project and stays under the MIT License ([gateway/LICENSE](gateway/LICENSE)); see [Gateway](#gateway-gateway) below.
 
-This file lists the third-party software and data that are included in this repository, compiled into the firmware images, or served from the GitHub Pages site (web flasher and settings pages). An HTML version with the full text of each license is at <https://sefuzhou770801-hub.github.io/groki-bot/licenses.html> (source: [docs/licenses.html](docs/licenses.html)).
+This file lists the third-party software and data that are included in this repository, compiled into the firmware images, or served from the GitHub Pages site (web flasher and settings pages). An HTML version with the full text of each license is at <https://josssphzhou.github.io/groki-bot/licenses.html> (source: [docs/licenses.html](docs/licenses.html)).
 
 ## Data under a non-commercial license
 
