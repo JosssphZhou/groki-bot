@@ -1,6 +1,6 @@
 # Third-party notices
 
-Groki Bot's own source code is distributed under the Boost Software License 1.0 ([LICENSE](LICENSE)), Copyright (c) 2026 Kenta IDA and Copyright (c) 2026 sefuzhou770801-hub. The exception is the gateway in [gateway/](gateway/), which is a fork of an MIT project and stays under the MIT License ([gateway/LICENSE](gateway/LICENSE)); see [Gateway](#gateway-gateway) below.
+Groki Bot's own source code is distributed under the Boost Software License 1.0 ([LICENSE](LICENSE)), Copyright (c) 2026 Kenta IDA and Copyright (c) 2026 Joseph Zhou. The exception is the gateway in [gateway/](gateway/), which is a fork of an MIT project and stays under the MIT License ([gateway/LICENSE](gateway/LICENSE)); see [Gateway](#gateway-gateway) below.
 
 This file lists the third-party software and data that are included in this repository, compiled into the firmware images, or served from the GitHub Pages site (web flasher and settings pages). An HTML version with the full text of each license is at <https://josssphzhou.github.io/groki-bot/licenses.html> (source: [docs/licenses.html](docs/licenses.html)).
 
@@ -82,7 +82,7 @@ The Python gateway that runs on your computer (voice through Gemini Live, the "H
 
 ### Upstream
 
-- Forked from [kisaragi-mochi/stackchan-mcp](https://github.com/kisaragi-mochi/stackchan-mcp), MIT License. The full license text with all copyright lines is kept in [gateway/LICENSE](gateway/LICENSE): (c) 2025 Shenzhen Xinzhi Future Technology Co., Ltd.; (c) 2025 Project Contributors; (c) 2026 kisaragi-mochi; (c) 2026 Groki Bot contributors. New files added in this repository (`gateway/stackchan_mcp/gbot_brain.py`, `gbot_client.py`, `gbot_http_proxy.py` and their tests) are (c) 2026 sefuzhou770801-hub under the same MIT License.
+- Forked from [kisaragi-mochi/stackchan-mcp](https://github.com/kisaragi-mochi/stackchan-mcp), MIT License. The full license text with all copyright lines is kept in [gateway/LICENSE](gateway/LICENSE): (c) 2025 Shenzhen Xinzhi Future Technology Co., Ltd.; (c) 2025 Project Contributors; (c) 2026 kisaragi-mochi; (c) 2026 Groki Bot contributors. New files added in this repository (`gateway/stackchan_mcp/gbot_brain.py`, `gbot_client.py`, `gbot_http_proxy.py` and their tests) are (c) 2026 Joseph Zhou under the same MIT License.
 - The NOTE paragraph in `gateway/LICENSE` about GPL-3.0 SCServo_lib files refers to the upstream project's own `firmware/` directory. That directory and those files are not part of this repository; the Groki Bot firmware does not use SCServo_lib.
 - The gateway speaks the [XiaoZhi](https://github.com/78/xiaozhi-esp32) WebSocket protocol (MIT). No XiaoZhi source code is included.
 
