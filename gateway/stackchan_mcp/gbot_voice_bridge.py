@@ -289,7 +289,9 @@ class GbotVoiceBridge:
         return instructions + (
             "\nOnly call tools declared in this session. For desktop tasks use native "
             "send_task(request); report acceptance only after relay=accepted. "
-            "If send_task is not declared, desktop delegation is unavailable."
+            "If send_task is not declared, desktop delegation is unavailable. "
+            "工具结果包含 spoken 时，只向用户读出 spoken；不要读 relay、errorClass、"
+            "错误码、字段名或调试信息。"
         )
 
     def _safe_tool_name(self, name):
@@ -323,9 +325,12 @@ class GbotVoiceBridge:
             return {"relay": "refused", "spoken": "桌面助手没有受理这项任务。"}
         return {
             "relay": "unreachable",
-            "spoken": "桌面助手暂时无法受理任务，请稍后再试。",
+            "spoken": (
+                "桌面助手暂时未连上，请稍后再试。"
+                if code == "native_not_ready"
+                else "桌面助手暂时无法受理任务，请稍后再试。"
+            ),
             "errorClass": "voice_bridge",
-            "failureCode": code,
         }
 
     def _native_tool_result(self, name, result):
@@ -900,7 +905,11 @@ class GbotVoiceBridge:
                 result = (
                     self._desktop_failure("native_not_ready")
                     if name == "send_task"
-                    else {"ok": False, "error": "native desktop channel is not ready"}
+                    else {
+                        "ok": False,
+                        "error": "桌面助手暂时未连上，请稍后再试。",
+                        "spoken": "桌面助手暂时未连上，请稍后再试。",
+                    }
                 )
             elif name == "send_task":
                 request = arguments.get("request")

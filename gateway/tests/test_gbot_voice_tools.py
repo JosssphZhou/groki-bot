@@ -628,3 +628,30 @@ async def test_native_not_ready_rejects_desktop_tools_without_post(
     b._local.assert_not_awaited()
     assert b.metrics["tool_outcomes"][name + ":native_not_ready"] == 1
     await b.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name,args",
+    [("send_task", '{"request":"fixture"}'), ("search_conversations", "{}")],
+)
+async def test_unavailable_desktop_has_readable_chinese_without_diagnostic_code(
+    monkeypatch, name, args
+):
+    import json
+
+    b = make(monkeypatch)
+    b._remote_tools["search_conversations"] = {"parameters": {"type": "object"}}
+    b._native.ready = False
+    await b._tool({"name": name, "call_id": "offline", "arguments": args})
+    raw = next(
+        call.args[0]["item"]["output"]
+        for call in b._send.call_args_list
+        if call.args[0]["type"] == "conversation.item.create"
+    )
+    output = json.loads(raw)
+    assert output["spoken"] == "桌面助手暂时未连上，请稍后再试。"
+    assert "failureCode" not in output and "native_not_ready" not in raw
+    assert b.metrics["tool_outcomes"][name + ":native_not_ready"] == 1
+    assert "spoken" in b._provider_tool_instructions()
+    await b.stop()
