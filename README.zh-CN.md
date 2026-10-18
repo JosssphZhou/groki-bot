@@ -15,19 +15,67 @@ Groki Bot 桌面机器人（M5Stack CoreS3 加 Stack-chan 底座）的全部内�
 
 1. 刷固件并配好 Wi-Fi：照[用法 1](#用法-1只刷固件)的第 1、2 步做，API 密钥可以不填。
 2. 在 Mac 上装网关：`git clone` 本仓库，`cd groki-bot/gateway`，`uv sync --all-extras`，`cp .env.example .env`。
-3. 在 `gateway/.env` 里写下面 4 项，换成你自己的 agent 名字和 ID（详见[网关说明](gateway/README.zh-CN.md#grok-bot-登录态语音macos)）：
-
-   ```dotenv
-   STACKCHAN_VOICE_BACKEND=gbot
-   STACKCHAN_GBOT_VOICE_BOT_ID=YOUR_AGENT_ID
-   STACKCHAN_TOOL_BOT=助手
-   STACKCHAN_TOOL_BOT_ID=YOUR_AGENT_ID
-   ```
-
-4. 另开一个终端，在 `gateway/` 下启动登录桥并保持运行（把同样的值传进去，它不读 `.env`）：`node scripts/gbot_voice_session_bridge.mjs`。
+3. 按[配置 Grok Bot 原生语音](#配置-grok-bot-原生语音)一节，在 `gateway/.env` 中设置四项配置。
+4. 另开一个终端，按[配置 Grok Bot 原生语音](#配置-grok-bot-原生语音)一节的完整命令启动登录桥，并保持运行。
 5. 按[用法 2](#用法-2固件加网关)启动网关，在蓝牙设置页把机器人指向 `ws://<电脑局域网 IP>:8765`，然后说"Hi Grok"。
 
 默认后端仍是 Gemini，把 `STACKCHAN_VOICE_BACKEND` 设回 `gemini` 即可切回。其他语音方式（OpenAI Realtime、Gemini Live、用 `gbot` 命令行转交任务）在下面的[其他语音后端](#其他语音后端)一节。
+
+### 配置 Grok Bot 原生语音
+
+代码默认的语音后端仍是 Gemini，不会自动用 Grok，要用 Grok Bot 原生语音，需要你自己在 `gateway/.env` 里切换。
+
+原生语音只支持 macOS，走 Grok Bot 桌面应用的内部接口，测试版本是 0.71.2，应用升级后可能失效；失效或不想用时，把 `STACKCHAN_VOICE_BACKEND` 改成 `gemini` 并重启网关，不用重刷固件，前提是 Gemini 密钥还在。
+
+在 `gateway/.env` 中加入下面四行，把示例名字和 ID 换成你自己的：
+
+```dotenv
+STACKCHAN_VOICE_BACKEND=gbot
+STACKCHAN_GBOT_VOICE_BOT_ID=YOUR_AGENT_ID
+STACKCHAN_TOOL_BOT=助手
+STACKCHAN_TOOL_BOT_ID=YOUR_AGENT_ID
+```
+
+- `STACKCHAN_VOICE_BACKEND=gbot` 选择 Grok 语音后端。
+- `STACKCHAN_GBOT_VOICE_BOT_ID` 是语音会话使用的 agent ID。
+- `STACKCHAN_TOOL_BOT` 是你给这个 agent 起的名字，代码只检查它非空，不会去应用里按名字查找。
+- `STACKCHAN_TOOL_BOT_ID` 是桌面任务使用的 agent ID，必须与语音使用的 ID 逐字符一致，不会自动归一化大小写和空白。
+
+名字是你自己的 agent 的名字，ID 是同一个 agent 的 ID。装有可选的 `gbot` 命令行时，可以这样查找：
+
+```sh
+gbot bots list
+gbot bots list --json
+gbot bots get "<名字或 ID>"
+```
+
+这些命令读取本机的 Grok Bot agent 目录。找不到目录时会报错，并提示用 `--dir` 或环境变量 `GROK_BOT_AGENTS_DIR` 指定目录（2026-10-18 在 gbot 0.11.3 上实测）。`--json` 输出 JSON，帮助里没有写输出列名或字段。拿不到 ID 时，先别继续，去 Grok Bot 应用或你的 agent 配置里确认 ID。拿到 ID 后，运行原生语音本身不需要这个命令行工具。
+
+在同一台 Mac 上登录 Grok Bot 桌面应用。另开一个终端，在 `gateway/` 下运行完整命令，传入相同名字和 ID，并保持这个终端不关：
+
+```sh
+STACKCHAN_GBOT_VOICE_BOT_ID=YOUR_AGENT_ID \
+STACKCHAN_TOOL_BOT=助手 \
+STACKCHAN_TOOL_BOT_ID=YOUR_AGENT_ID \
+node scripts/gbot_voice_session_bridge.mjs
+```
+
+登录桥不读 `.env`，需要显式传入这三个环境变量，只监听 `127.0.0.1:18771`。
+
+可选：`STACKCHAN_GBOT_VOICE_LANGUAGE` 默认是 `zh`，需要时可在 `gateway/.env` 设为 `en` 或 `auto`。其他高级选项见[网关说明](gateway/README.zh-CN.md#grok-bot-登录态语音macos)。
+
+启动网关后，在启动日志里确认有 `voice_backend=gbot`，再从另一个终端检查登录桥：
+
+```sh
+curl http://127.0.0.1:18771/health
+```
+
+登录桥运行时会返回 `"ok": true`。这两项只确认后端选择和登录桥配置，不证明登录有效或语音已通。真正的确认是对机器人说 "Hi Grok"，听到回应。
+
+要切回 Gemini，把 `STACKCHAN_VOICE_BACKEND` 改成 `gemini`（或删掉这一行），保留有效的 `GEMINI_API_KEY`，再重启网关。若网关由其他方式启动、环境里另外注入了 `gbot`，要在那里一起改。独立运行的登录桥不会自动退出，不用时在它的终端里结束。
+
+Grok 语音启动失败时，网关不会自动回退到 Gemini，机器人可能显示在线但没有语音，日志里有 `Grok voice startup failed`，这时按上一段切回 Gemini。
+
 
 ## 其他语音后端
 
