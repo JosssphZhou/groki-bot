@@ -93,7 +93,7 @@ clean:
 # SDKCONFIG_DEFAULTS_HW chain as the host `build` target. After the build,
 # chown the output so the host user can read/write it (needed on Linux bind
 # mounts; macOS Docker Desktop already maps ownership in most setups).
-DOCKER_IMAGE     ?= espressif/idf:release-v5.5
+DOCKER_IMAGE     ?= espressif/idf:v5.5.4
 DOCKER_WORKDIR   ?= /work
 
 define docker-run

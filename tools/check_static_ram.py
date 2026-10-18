@@ -21,12 +21,15 @@ import json
 import subprocess
 import sys
 
-# Minimum static D/IRAM left for the heap, in bytes. cores3 had about
-# 124 KiB left when this floor was set (IDF 5.5.4, esp-sr 2.6.0) and boots
-# normally; the broken releases had about 18 KiB. Raise the floor if a
-# measured boot log ("before Wi-Fi init: INT free=...") shows it is too low.
+# Minimum static D/IRAM left for the heap, in bytes. cores3 had 127,473
+# bytes (about 124.5 KiB) left when this floor was set (IDF 5.5.4, esp-sr
+# 2.6.0) and boots normally; the broken releases had about 18 KiB. The floor
+# leaves about 8 KiB of slack below that build.
+# This check only guarantees that the firmware boots. Internal RAM use with
+# Wi-Fi connected and a voice session running has not been measured yet;
+# set the floor again from those measurements once they exist.
 MIN_DIRAM_REMAIN = {
-    "cores3": 96 * 1024,
+    "cores3": 116 * 1024,
 }
 
 
@@ -34,7 +37,7 @@ def diram_remain(map_file: str) -> int:
     out = subprocess.run(
         [sys.executable, "-m", "esp_idf_size", "--format", "json", map_file],
         check=True,
-        capture_output=True,
+        stdout=subprocess.PIPE,
         text=True,
     ).stdout
     data = json.loads(out)
