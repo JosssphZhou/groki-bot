@@ -10,7 +10,7 @@
 
 ### Docker（推荐）
 
-镜像是 `espressif/idf:release-v5.5`。第一次拉取约 14 GB。官方镜像里没有 Node，Makefile 会在容器内自动安装 Node.js 18+。产物在 `build-cores3/`。
+镜像是 `espressif/idf:v5.5.4`。第一次拉取约 14 GB。官方镜像里没有 Node，Makefile 会在容器内自动安装 Node.js 18+。产物在 `build-cores3/`。
 
 ```sh
 git clone https://github.com/JosssphZhou/groki-bot.git

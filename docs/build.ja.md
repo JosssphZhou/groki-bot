@@ -22,7 +22,7 @@ Docker でのビルドを推奨します。ホストに ESP-IDF を入れる必�
 
 ### Docker（推奨）
 
-イメージは `espressif/idf:release-v5.5` です。初回の pull は約 14 GB です。
+イメージは `espressif/idf:v5.5.4` です。初回の pull は約 14 GB です。
 公式イメージに Node は入っていません。Makefile がコンテナ内で Node.js 18+
 を自動インストールします。成果物は `build-cores3/` です。
 

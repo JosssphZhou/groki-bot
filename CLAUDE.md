@@ -12,7 +12,7 @@ make build BOARD=cores3
 make flash BOARD=cores3 PORT=/dev/ttyACM0
 ```
 
-`make build-docker BOARD=cores3` builds inside `espressif/idf:release-v5.5` without a local IDF. Node.js 18+ must be on `PATH`: CMake compiles `assets/*.avdsl` to bytecode with `tools/avatar_dsl/`.
+`make build-docker BOARD=cores3` builds inside `espressif/idf:v5.5.4` without a local IDF. Node.js 18+ must be on `PATH`: CMake compiles `assets/*.avdsl` to bytecode with `tools/avatar_dsl/`.
 
 Host unit tests live under `components/*/test/host/` and run in CI (`.github/workflows/host-tests.yml`).
 

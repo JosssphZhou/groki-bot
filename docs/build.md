@@ -10,7 +10,7 @@ Docker is the recommended way to build; you do not need ESP-IDF on your machine.
 
 ### Docker (recommended)
 
-The image is `espressif/idf:release-v5.5`. The first pull is about 14 GB. The official image has no Node; the Makefile installs Node.js 18+ inside the container. Output goes to `build-cores3/`.
+The image is `espressif/idf:v5.5.4`. The first pull is about 14 GB. The official image has no Node; the Makefile installs Node.js 18+ inside the container. Output goes to `build-cores3/`.
 
 ```sh
 git clone https://github.com/JosssphZhou/groki-bot.git
