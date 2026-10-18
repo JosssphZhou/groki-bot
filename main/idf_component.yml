@@ -15,4 +15,9 @@ dependencies:
   # [ASR Phase 0] esp-sr: on-device wake word (WakeNet) + AFE. Fetched
   # always but only used when CONFIG_STACKCHAN_ASR_ENABLED (models selected
   # via menuconfig → flashed to the `model` partition). cores3-asr variant.
-  espressif/esp-sr: "^2.4.0"
+  # Kept to the 2.6 series on purpose. esp-sr 2.5.4 (yanked upstream) linked
+  # ~115 KiB of internal-RAM .bss from libnsnet3.a even with WebRTC noise
+  # suppression selected; v0.2.0-v0.2.2 were built with it and boot-looped on
+  # CoreS3 in esp_wifi_init. Before widening this range, check the static
+  # D/IRAM headroom that tools/check_static_ram.py prints for cores3.
+  espressif/esp-sr: "~2.6.0"

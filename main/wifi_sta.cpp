@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include <esp_event.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_mac.h>
 #include <esp_netif.h>
@@ -181,6 +182,15 @@ void event_handler(void* /*arg*/, esp_event_base_t base, int32_t id, void* data)
 
 void wifi_start(const config::DeviceConfig& cfg)
 {
+    // Internal RAM left for the Wi-Fi driver. esp_wifi_init needs a 6.5 KiB contiguous internal block for its task
+    // stack plus its RX/TX buffers; when these numbers are low the boot aborts in esp_wifi_init below. Keep this
+    // line: it is the reference point for comparing boot logs from different builds and devices.
+    ESP_LOGI(kTag, "before Wi-Fi init: INT free=%u largest=%u | DMA free=%u largest=%u",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
+
     g_boot_cfg = &cfg;
     ESP_ERROR_CHECK(esp_netif_init());
 
