@@ -119,6 +119,7 @@ class GeminiVoiceProxy:
     _device_hello: dict[str, Any] | None = None
     _send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _tts_active: bool = False
+    _tts_generation: int = 0
     _speak_text_active: bool = False
     _speak_text_frames: int = 0
     _tts_tasks: set[asyncio.Task[None]] = field(default_factory=set)
@@ -325,6 +326,7 @@ class GeminiVoiceProxy:
             on_audio=self._handle_gemini_audio,
             on_text=on_text,
             on_turn_complete=self.end_tts,
+            on_interrupt=self._abort_in_flight_tts,
             on_end_conversation=self._handle_bridge_end_conversation,
             on_session_dead=self._handle_session_dead,
             usb_transport=self.usb_transport,
@@ -414,6 +416,7 @@ class GeminiVoiceProxy:
 
     async def stop(self) -> None:
         self._stopped = True
+        self._tts_generation += 1
         if self._keepalive is not None:
             await self._keepalive.stop()
             self._keepalive = None
@@ -458,7 +461,11 @@ class GeminiVoiceProxy:
             return False
         msg_type = message.get("type", "")
         if msg_type == "abort":
-            await self._abort_in_flight_tts()
+            interrupt = getattr(self._bridge, "interrupt", None)
+            if interrupt is not None:
+                await interrupt()
+            else:
+                await self._abort_in_flight_tts()
         elif msg_type == "listen":
             state = message.get("state", "")
             if state == "stop":
@@ -829,7 +836,8 @@ class GeminiVoiceProxy:
         ``tts.stop`` itself is sent from :meth:`on_turn_complete` because
         Gemini's audio frames don't always land before turn_complete.
         """
-        if self._send_to_device is None or self._codec is None or not pcm_24khz:
+        if (self._stopped or self._send_to_device is None
+                or self._codec is None or not pcm_24khz):
             return
         now = asyncio.get_running_loop().time()
         if self._turn_rx_first is None:
@@ -945,14 +953,19 @@ class GeminiVoiceProxy:
 
     async def _queue_tts_frames(self, frames: list[bytes]) -> bool:
         """Start TTS if needed, honor the start-to-first-frame delay, then queue frames."""
-        if not frames:
+        if not frames or self._stopped:
             return False
+        generation = self._tts_generation
         async with self._send_lock:
+            if generation != self._tts_generation:
+                return False
             if not self._tts_active:
                 if not await self._begin_tts():
                     return False
                 if self.device_tts_start_delay_s > 0:
                     await asyncio.sleep(self.device_tts_start_delay_s)
+        if generation != self._tts_generation or self._stopped:
+            return False
         self._ensure_drain_task()
         for frame in frames:
             await self._frame_queue.put(frame)
@@ -1194,6 +1207,7 @@ class GeminiVoiceProxy:
         Public so the bridge / orchestrator can call it on turn_complete.
         Idempotent: a second call without intervening start is a no-op.
         """
+        generation = self._tts_generation
         # Short turns may finish before the prebuffer threshold trips. Encode
         # whatever PCM we held back and push it onto the queue so the drain
         # task can ship it at the steady cadence.
@@ -1238,9 +1252,13 @@ class GeminiVoiceProxy:
                 await self._frame_queue.join()
             except Exception as exc:
                 logger.warning("frame queue join failed: %s", exc)
+        if generation != self._tts_generation:
+            return
         await self._stop_drain_task(cancel=False)
 
         async with self._send_lock:
+            if generation != self._tts_generation:
+                return
             try:
                 await self._send_to_device(  # type: ignore[misc]
                     json.dumps({"type": "tts", "state": "stop"})
@@ -1264,6 +1282,7 @@ class GeminiVoiceProxy:
         notes this in ``audio_stream.send_tts_state``). Always pair the
         codec reset with a stop envelope so the device returns to idle.
         """
+        self._tts_generation += 1
         was_active = self._tts_active
         if self._codec is not None:
             self._codec.reset_encode_buffer()

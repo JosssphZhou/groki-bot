@@ -46,6 +46,8 @@ from .mac_control import (
 )
 from .wake_gate import WakeGateState
 
+from .voice_output_queue import VoiceOutputQueue
+
 logger = logging.getLogger(__name__)
 
 EMOTION_SYSTEM_INSTRUCTION = """## Expressing emotion
@@ -943,6 +945,7 @@ class GeminiLiveBridge:
         on_audio: AudioCallback | None = None,
         on_text: TextCallback | None = None,
         on_turn_complete: TurnCompleteCallback | None = None,
+        on_interrupt: TurnCompleteCallback | None = None,
         on_end_conversation: TurnCompleteCallback | None = None,
         snap_to_face: Callable[[], Awaitable[None]] | None = None,
         usb_transport: Any | None = None,
@@ -970,6 +973,8 @@ class GeminiLiveBridge:
         self._on_audio = on_audio
         self._on_text = on_text
         self._on_turn_complete = on_turn_complete
+        self._on_interrupt = on_interrupt
+        self._output = VoiceOutputQueue()
         self._on_end_conversation = on_end_conversation
         self._snap_to_face = snap_to_face
         self._session: Any | None = None
@@ -991,6 +996,7 @@ class GeminiLiveBridge:
         self._reconnect_max_backoff_s = reconnect_max_backoff_s
         self._conversation_idle_timeout_s = conversation_idle_timeout_s
         self._silence_timeout_task: asyncio.Task[None] | None = None
+        self._silence_generation = 0
         # Lifecycle counter — increments each time a fresh Gemini Live socket
         # comes up. Used by tests + by snap_to_face guard so we only "wake up"
         # on the very first connect, not after silent reconnects.
@@ -1259,6 +1265,13 @@ class GeminiLiveBridge:
                 if self._go_away_received or not received_any or self._receive_stall_triggered:
                     break
         finally:
+            self._cancel_silence_timeout()
+            # stop() owns output cancellation during deliberate shutdown. An
+            # output callback may itself be awaiting stop()/this receiver task.
+            if not self._stop_event.is_set():
+                await self._output.cancel()
+                if self._on_interrupt is not None:
+                    await self._on_interrupt()
             task = self._receive_watchdog_task
             self._receive_watchdog_task = None
             if task is not None and not task.done():
@@ -1334,6 +1347,10 @@ class GeminiLiveBridge:
         if server_content is None:
             return
 
+        if getattr(server_content, "interrupted", False):
+            await self.interrupt()
+            return
+
         # Model output means a reply is in progress. Gemini 3.8 Live sends a
         # turn_complete right after a tool call, before the spoken answer, so
         # a silence timer armed by that early turn_complete must not end the
@@ -1347,7 +1364,8 @@ class GeminiLiveBridge:
         if self._on_audio is not None:
             audio = self._extract_audio_chunk(server_content)
             if audio:
-                await self._on_audio(audio)
+                self._output.submit(lambda: self._on_audio(audio))
+                await asyncio.sleep(0)
 
         # TEXT-mode utterances: buffer fragments, flush on turn_complete so a
         # single "好的, 我抬一下头" doesn't trigger six separate TTS calls.
@@ -1368,16 +1386,33 @@ class GeminiLiveBridge:
         # Voice backends need to know when Gemini finished speaking so they
         # can close out their tts.stop envelope. Fire even when text/audio
         # callbacks are off so the GeminiVoiceProxy works with audio only.
-        if (
-            self._on_turn_complete is not None
-            and getattr(server_content, "turn_complete", False)
-        ):
-            try:
-                await self._on_turn_complete()
-            except Exception:
-                logger.exception("on_turn_complete callback failed")
         if getattr(server_content, "turn_complete", False):
-            self._schedule_silence_timeout()
+            silence_generation = self._silence_generation
+
+            async def finish_turn() -> None:
+                try:
+                    if self._on_turn_complete is not None:
+                        await self._on_turn_complete()
+                except Exception:
+                    logger.warning("Voice turn completion failed (details redacted)")
+                    return
+                # Cancelled completions never reach this point. Model completion
+                # can precede seconds of device playback; newer output or input
+                # also invalidates an older tool-turn's idle timer.
+                if (silence_generation == self._silence_generation
+                        and not self._stop_event.is_set()):
+                    self._schedule_silence_timeout()
+
+            self._output.submit(finish_turn)
+            await asyncio.sleep(0)
+
+    async def interrupt(self) -> None:
+        """Discard old output before resetting the device sink for a new turn."""
+        self._cancel_silence_timeout()
+        self._text_buf.clear()
+        await self._output.cancel()
+        if self._on_interrupt is not None:
+            await self._on_interrupt()
 
     @staticmethod
     def _has_model_output(server_content: Any) -> bool:
@@ -2138,6 +2173,7 @@ class GeminiLiveBridge:
             self._silence_timeout_task = None
 
     def _cancel_silence_timeout(self) -> None:
+        self._silence_generation += 1
         task = self._silence_timeout_task
         self._silence_timeout_task = None
         if task is not None and not task.done():
@@ -2198,6 +2234,7 @@ class GeminiLiveBridge:
     async def stop(self) -> None:
         """Tear down the receive loop and close the Live session."""
         self._stop_event.set()
+        await self._output.cancel()
         self._cancel_silence_timeout()
         self._clear_reconnect_audio()
         if self._session is not None:
