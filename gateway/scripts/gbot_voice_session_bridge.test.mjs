@@ -126,3 +126,45 @@ test('native event IDs deduplicate replays without conflating separate same-text
   assert.equal(filterNativeEvent(event,context),null);
   assert.ok(filterNativeEvent({...event,eventId:'event-2'},context));
 });
+
+test('HTTP: typed EOF or error reconnects independently and box results still arrive', async () => {
+  for (const failure of ['eof', 'error']) {
+    const port = await freePort();
+    let box, attempts = 0, typedCancelled = false;
+    const logs = [];
+    const sandbox = {
+      presence: async () => {}, callerAuthId: async () => 'owner',
+      openEvents: async signal => new Response(new ReadableStream({start(controller) {
+        box = controller;
+        signal.addEventListener('abort', () => controller.close(), {once:true});
+      }}), {headers:{'content-type':'text/event-stream'}}),
+    };
+    const transcript = {async *events(_context, signal, onOpen) {
+      attempts++; onOpen(200);
+      if (attempts === 1) {
+        if (failure === 'error') throw new TypeError('SECRET_FIXTURE');
+        return;
+      }
+      await new Promise(resolve => signal.addEventListener('abort', resolve, {once:true}));
+      typedCancelled = true;
+    }};
+    const server = createBridge({port, agentId:'a', desktopEnabled:true, toolsEnabled:false, sandbox, transcript, nativeRetryDelayMs:10, nativeLog:event=>logs.push(event)});
+    await new Promise(resolve=>server.listen(port,'127.0.0.1',resolve));
+    let reader;
+    try {
+      await fetch(`http://127.0.0.1:${port}/native/presence`, {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agentId:'a',callId:'call-c',isOnTheLine:true,acceptsOverheard:false})});
+      const response=await fetch(`http://127.0.0.1:${port}/native/events?agentId=a&callId=call-c`);
+      reader=response.body.getReader(); await reader.read();
+      await new Promise(resolve=>setTimeout(resolve,30));
+      assert.ok(attempts>=2);
+      box.enqueue(new TextEncoder().encode('data: '+JSON.stringify({channel:'voice-call-nudge',payload:{agentId:'a',callId:'call-c',kind:'outcome',update:'FIXTURE RESULT'}})+'\n\n'));
+      const result=await reader.read();
+      assert.equal(result.done,false); assert.match(new TextDecoder().decode(result.value),/FIXTURE RESULT/);
+      assert.ok(logs.some(event=>event.source==='typed'&&event.state===failure));
+      assert.equal(JSON.stringify(logs).includes('SECRET_FIXTURE'),false);
+      await reader.cancel(); reader=null;
+      await new Promise(resolve=>setTimeout(resolve,20));
+      assert.equal(typedCancelled,true);
+    } finally {await reader?.cancel();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+  }
+});

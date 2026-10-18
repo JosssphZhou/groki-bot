@@ -161,12 +161,13 @@ export class NativeTranscriptClient {
     await response.body?.cancel();
     return {ok, status: response.status, connectJson: ok};
   }
-  async *events(context, signal) {
+  async *events(context, signal, onOpen = () => {}) {
     // Empty session is the native owner slot. Non-owner sessions require a
     // separately verified metadata binding and are deliberately unsupported.
     if (context.sessionId) throw new Error('session_binding_unavailable');
     const response = await accountRequest('WatchGrokBotTranscripts', {cursors: [{agentId: context.agentId, generation: 0, afterUpdatedSeq: '0'}], includeUnlistedAgents: false, inlineBodyMaxBytes: 65536}, {accountLoader: this.accountLoader, fetcher: this.fetcher, signal, streaming: true});
     if (!response.headers.get('content-type')?.startsWith('application/connect+json')) { await response.body?.cancel(); throw new Error('native_stream_format'); }
+    onOpen(response.status);
     let pending = Buffer.alloc(0);
     const state = {connected: false, sinceMs: context.sinceMs, generation: null};
     try {
@@ -269,7 +270,24 @@ export function validateBody(route, body) {
   return body;
 }
 
-export function createBridge({ port = 18771, rpc = accountRpc, agentId = process.env.STACKCHAN_GBOT_VOICE_BOT_ID || process.env.STACKCHAN_GBOT_VOICE_AGENT_ID || process.env.STACKCHAN_TOOL_BOT_ID, toolsEnabled = process.env.STACKCHAN_GBOT_VOICE_TOOLS === '1', desktopEnabled = Boolean(process.env.STACKCHAN_TOOL_BOT?.trim()) || process.env.STACKCHAN_GBOT_VOICE_DESKTOP === '1', sandbox = new NativeSandboxClient({connectMode: 'normal'}), transcript = new NativeTranscriptClient(), sessionId = process.env.STACKCHAN_GBOT_VOICE_SESSION_ID || '' } = {}) {
+function streamFailure(error) {
+  const status = /^upstream_http_(\d{3})$/.exec(error?.message ?? '');
+  const name = ['Error', 'TypeError', 'AbortError', 'TimeoutError'].includes(error?.name) ? error.name : 'other';
+  return {http_status: status ? Number(status[1]) : null, error_class: name};
+}
+
+function waitForNativeRetry(milliseconds, signal) {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise(resolve => {
+    const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve(); };
+    const timer = setTimeout(finish, milliseconds);
+    signal.addEventListener('abort', finish, {once: true});
+  });
+}
+
+export function createBridge({ port = 18771, rpc = accountRpc, agentId = process.env.STACKCHAN_GBOT_VOICE_BOT_ID || process.env.STACKCHAN_GBOT_VOICE_AGENT_ID || process.env.STACKCHAN_TOOL_BOT_ID, toolsEnabled = process.env.STACKCHAN_GBOT_VOICE_TOOLS === '1', desktopEnabled = Boolean(process.env.STACKCHAN_TOOL_BOT?.trim()) || process.env.STACKCHAN_GBOT_VOICE_DESKTOP === '1', sandbox = new NativeSandboxClient({connectMode: 'normal'}), transcript = new NativeTranscriptClient(), nativeRetryDelayMs = 5000, nativeLog = event => console.log(JSON.stringify({event: 'gbot_native_stream', ...event})), sessionId = process.env.STACKCHAN_GBOT_VOICE_SESSION_ID || '' } = {}) {
+  if (!Number.isFinite(nativeRetryDelayMs) || nativeRetryDelayMs < 10 || nativeRetryDelayMs > 30000) throw new Error('invalid_native_retry_delay');
+  const logStream = (source, state, extra = {}) => nativeLog({source, state, ...extra});
   let activeCall = null;
   let presenceBusy = false;
   const streams = new Set();
@@ -290,18 +308,32 @@ export function createBridge({ port = 18771, rpc = accountRpc, agentId = process
       if ([...eventUrl.searchParams.keys()].some(k => !['agentId', 'callId'].includes(k)) || !activeCall || eventUrl.searchParams.get('agentId') !== agentId || eventUrl.searchParams.get('callId') !== activeCall.callId) return send(403, {ok: false, error: 'call_not_allowed'});
       const context = activeCall, controller = new AbortController();
       streams.add(controller); res.on('close', () => controller.abort());
+      let typedTask;
       try {
         const upstream = await sandbox.openEvents(controller.signal);
+        logStream('box', 'open', {http_status: upstream.status, error_class: null});
         res.writeHead(200, {'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'});
         res.write(': connected\n\n');
-        const typedTask = (async () => {
-          for await (const event of transcript.events(context, controller.signal)) {
-            if (activeCall !== context || controller.signal.aborted) break;
-            if (!res.write('data: ' + JSON.stringify(event) + '\n\n')) throw new Error('slow_consumer');
+        typedTask = (async () => {
+          while (activeCall === context && !controller.signal.aborted) {
+            try {
+              for await (const event of transcript.events(context, controller.signal, status => logStream('typed', 'open', {http_status: status, error_class: null}))) {
+                if (activeCall !== context || controller.signal.aborted) break;
+                if (!res.write('data: ' + JSON.stringify(event) + '\n\n')) throw new Error('slow_consumer');
+              }
+              if (!controller.signal.aborted) logStream('typed', 'eof', {http_status: null, error_class: null});
+            } catch (error) {
+              if (controller.signal.aborted) break;
+              if (error?.message === 'slow_consumer') {
+                logStream('downstream', 'slow_consumer', {http_status: null, error_class: 'Error'});
+                controller.abort();
+                break;
+              }
+              logStream('typed', 'error', streamFailure(error));
+            }
+            await waitForNativeRetry(nativeRetryDelayMs, controller.signal);
           }
-        })().catch(() => {}).finally(() => { controller.abort(); });
-        // This task always terminates through the same abort signal.
-        void typedTask;
+        })();
         let pending = '';
         const decoder = new TextDecoder();
         for await (const bytes of upstream.body) {
@@ -312,7 +344,11 @@ export function createBridge({ port = 18771, rpc = accountRpc, agentId = process
           while ((end = pending.indexOf('\n\n')) !== -1) {
             const block = pending.slice(0, end); pending = pending.slice(end + 2);
             const data = block.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trim()).join('\n');
-            if (!data) continue;
+            if (!data) {
+              // Preserve upstream heartbeat liveness without forwarding contents.
+              if (block.split('\n').some(line => line.startsWith(':')) && !res.write(': upstream\n\n')) throw new Error('slow_consumer');
+              continue;
+            }
             let event;
             try {
               const parsed = JSON.parse(data);
@@ -324,9 +360,16 @@ export function createBridge({ port = 18771, rpc = accountRpc, agentId = process
             if (context.seen.size > 2000) context.seen.delete(context.seen.values().next().value);
           }
         }
-      } catch {
+        if (!controller.signal.aborted) logStream('box', 'eof', {http_status: null, error_class: null});
+      } catch (error) {
+        if (!controller.signal.aborted) logStream('box', 'error', streamFailure(error));
         if (!res.headersSent) send(502, {ok: false, error: 'native_stream_failed'});
-      } finally { controller.abort(); streams.delete(controller); res.end(); }
+      } finally {
+        controller.abort();
+        await typedTask;
+        streams.delete(controller);
+        res.end();
+      }
       return;
     }
     const nativePresence = route === 'POST /native/presence';
