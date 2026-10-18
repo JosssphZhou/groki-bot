@@ -159,6 +159,7 @@ class GbotVoiceBridge:
         )
         self._local_tools_enabled = local_tools
         self._local_tools = {}
+        self._tool_schemas = {}
         self._remote_tools = {}
         self._tool_calls_seen = set()
         self._native = None
@@ -198,6 +199,12 @@ class GbotVoiceBridge:
             "discarded_audio_deltas": 0,
             "speech_starts": 0,
             "server_errors": {},
+            "declared_tools": [],
+            "tool_events": {},
+            "tool_outcomes": {},
+            "local_http_status": {},
+            "native_outcomes": {},
+            "native_updates": {},
         }
 
     def _configure_tools(self, session):
@@ -218,6 +225,7 @@ class GbotVoiceBridge:
         )
         declarations = []
         self._local_tools.clear()
+        self._tool_schemas.clear()
         self._remote_tools.clear()
         used = set()
         if not self._local_tools_enabled:
@@ -232,6 +240,7 @@ class GbotVoiceBridge:
                     raise ValueError("voice tool alias collision")
                 used.add(alias)
                 self._local_tools[alias] = original
+                self._tool_schemas[alias] = declaration.get("parameters", {})
                 declarations.append({**declaration, "name": alias, "type": "function"})
         extra = os.getenv("STACKCHAN_GBOT_VOICE_TOOLS") == "1"
         for declaration in session.get("tools", []):
@@ -248,8 +257,105 @@ class GbotVoiceBridge:
                 raise ValueError("voice tool name collision")
             used.add(name)
             self._remote_tools[name] = declaration
+            self._tool_schemas[name] = declaration.get("parameters", {})
             declarations.append(declaration)
+        names = sorted(self._safe_tool_name(item["name"]) for item in declarations)
+        self.metrics["declared_tools"] = names
+        logger.info("Grok voice declared tools=%s", ",".join(names))
         return declarations
+
+    def _safe_tool_name(self, name):
+        return (
+            name
+            if (
+                isinstance(name, str)
+                and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name)
+                and (name in self._local_tools or name in self._remote_tools)
+            )
+            else "other"
+        )
+
+    def _tool_outcome(self, name, outcome):
+        # Values originate only from the fixed local branches below, never bodies.
+        safe_name = self._safe_tool_name(name)
+        key = safe_name + ":" + outcome
+        counts = self.metrics["tool_outcomes"]
+        counts[key] = counts.get(key, 0) + 1
+        logger.info(
+            "Grok voice tool outcome name=%s outcome=%s user_epoch=%d desktop_epoch=%d",
+            safe_name,
+            outcome,
+            self._user_epoch,
+            self._desktop_epoch,
+        )
+
+    @staticmethod
+    def _desktop_failure(code, *, refused=False):
+        if refused:
+            return {"relay": "refused", "spoken": "桌面助手没有受理这项任务。"}
+        return {
+            "relay": "unreachable",
+            "spoken": "桌面助手暂时无法受理任务，请稍后再试。",
+            "errorClass": "voice_bridge",
+            "failureCode": code,
+        }
+
+    def _native_tool_result(self, name, result):
+        # VoiceCallHarnessTool.output is protobuf Value -> native JSON. It is
+        # neither JSON-encoded text nor an acknowledgement just because HTTP=200.
+        raw_kind = result.get("kind") if isinstance(result, dict) else None
+        kinds = {
+            1: "served",
+            2: "unknown_tool",
+            3: "invalid_input",
+            "VOICE_CALL_HARNESS_TOOL_OUTCOME_KIND_SERVED": "served",
+            "VOICE_CALL_HARNESS_TOOL_OUTCOME_KIND_UNKNOWN_TOOL": "unknown_tool",
+            "VOICE_CALL_HARNESS_TOOL_OUTCOME_KIND_INVALID_INPUT": "invalid_input",
+        }
+        kind = (
+            raw_kind
+            if isinstance(raw_kind, str)
+            and raw_kind in {"served", "unknown_tool", "invalid_input"}
+            else kinds.get(raw_kind, "other")
+            if type(raw_kind) in {int, str}
+            else "other"
+        )
+        output = result.get("output") if isinstance(result, dict) else None
+        relay = output.get("relay") if isinstance(output, dict) else None
+        relay = (
+            relay
+            if isinstance(relay, str)
+            and relay in {"accepted", "refused", "unreachable"}
+            else "invalid"
+        )
+        key = self._safe_tool_name(name) + ":" + kind + ":" + relay
+        counts = self.metrics["native_outcomes"]
+        counts[key] = counts.get(key, 0) + 1
+        logger.info(
+            "Grok native tool result name=%s kind=%s relay=%s",
+            self._safe_tool_name(name),
+            kind,
+            relay,
+        )
+        if name != "send_task":
+            return (
+                output
+                if kind == "served"
+                else {"ok": False, "error": "native tool failed"}
+            )
+        if kind != "served":
+            return self._desktop_failure(kind)
+        if relay == "accepted":
+            return {"relay": "accepted"}
+        if relay == "refused" and isinstance(output.get("spoken"), str):
+            return self._desktop_failure("refused", refused=True)
+        if (
+            relay == "unreachable"
+            and isinstance(output.get("spoken"), str)
+            and isinstance(output.get("errorClass"), str)
+        ):
+            return self._desktop_failure("unreachable")
+        return self._desktop_failure("invalid_response")
 
     def _cancel_idle(self):
         if self._idle_task and self._idle_task is not asyncio.current_task():
@@ -298,6 +404,13 @@ class GbotVoiceBridge:
         await self._flush_pending()
 
     async def _native_update(self, event, is_user):
+        topic = event.get("async_update", {}).get("topic")
+        topic = topic if topic in {"work_landed", "user_message"} else "other"
+        state = "dropped" if self._stopped or not self.running else "queued"
+        counts = self.metrics["native_updates"]
+        key = topic + ":" + state
+        counts[key] = counts.get(key, 0) + 1
+        logger.info("Grok native update topic=%s state=%s", topic, state)
         if self._stopped or not self.running:
             return
         if is_user:
@@ -376,6 +489,11 @@ class GbotVoiceBridge:
         async with self._http.request(
             method, self.url + path, json=payload, allow_redirects=False
         ) as response:
+            route = path if path in {"/credential", "/session", "/tool"} else "other"
+            key = route + ":" + str(response.status)
+            counts = self.metrics["local_http_status"]
+            counts[key] = counts.get(key, 0) + 1
+            logger.info("Grok local request route=%s status=%d", route, response.status)
             if response.status != 200:
                 raise RuntimeError("Grok Bot local bridge request failed")
             result = await response.json()
@@ -590,13 +708,27 @@ class GbotVoiceBridge:
                 self._turn_task = self._output.submit(self._finish_turn)
                 await asyncio.sleep(0)
             await self._flush_pending()
-        elif kind == "response.function_call_arguments.done" and (
-            event.get("name") in self._local_tools
-            or event.get("name") in self._remote_tools
-        ):
-            task = asyncio.create_task(self._tool(event))
-            self._tools.add(task)
-            task.add_done_callback(self._tools.discard)
+        elif kind == "response.function_call_arguments.done":
+            name = self._safe_tool_name(event.get("name"))
+            has_id = isinstance(event.get("call_id"), str) and bool(event["call_id"])
+            counts = self.metrics["tool_events"]
+            counts[name] = counts.get(name, 0) + 1
+            logger.info(
+                "Grok voice tool event name=%s call_id_present=%s user_epoch=%d desktop_epoch=%d",
+                name,
+                has_id,
+                self._user_epoch,
+                self._desktop_epoch,
+            )
+            raw_name = event.get("name")
+            if isinstance(raw_name, str) and (
+                raw_name in self._local_tools or raw_name in self._remote_tools
+            ):
+                task = asyncio.create_task(self._tool(event))
+                self._tools.add(task)
+                task.add_done_callback(self._tools.discard)
+            else:
+                self._tool_outcome(name, "undeclared")
         elif kind == "error":
             error = event.get("error", {})
             code = error.get("code")
@@ -628,28 +760,33 @@ class GbotVoiceBridge:
 
     async def _tool(self, event):
         call_id = event.get("call_id")
-        if (
-            not isinstance(call_id, str)
-            or not call_id
-            or call_id in self._tool_calls_seen
-        ):
+        name = event.get("name")
+        if not isinstance(call_id, str) or not call_id:
+            self._tool_outcome(name, "missing_call_id")
+            return
+        if call_id in self._tool_calls_seen:
+            self._tool_outcome(name, "duplicate_call_id")
             return
         if len(self._tool_calls_seen) >= 4096:
+            self._tool_outcome(name, "call_limit")
             return
         self._tool_calls_seen.add(call_id)
-        name = event.get("name")
+        outcome = "returned"
         original = self._local_tools.get(name)
         try:
-            arguments = json.loads(event.get("arguments", "{}"))
+            try:
+                arguments = json.loads(event.get("arguments", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                outcome = "invalid_arguments"
+                raise
             if not isinstance(arguments, dict):
+                outcome = "invalid_arguments"
                 raise ValueError("invalid tool arguments")
-            if name in self._remote_tools:
-                from .voice_tools import _valid_arguments
+            from .voice_tools import _valid_arguments
 
-                if not _valid_arguments(
-                    arguments, self._remote_tools[name].get("parameters", {})
-                ):
-                    raise ValueError("invalid remote tool arguments")
+            if not _valid_arguments(arguments, self._tool_schemas.get(name, {})):
+                outcome = "invalid_arguments"
+                raise ValueError("invalid tool arguments")
             if original == "ask_grokbot" or name == "send_task":
                 field = "task" if original == "ask_grokbot" else "request"
                 request = arguments.get(field)
@@ -659,12 +796,15 @@ class GbotVoiceBridge:
                     or not isinstance(request, str)
                     or not request.strip()
                     or len(request) > 20000
-                    or set(arguments) != {field}
                 ):
-                    result = {
-                        "ok": False,
-                        "error": "desktop task requires a new explicit user request",
-                    }
+                    outcome = (
+                        "desktop_disabled"
+                        if not self._desktop_enabled
+                        else "new_user_required"
+                        if self._user_epoch <= self._desktop_epoch
+                        else "invalid_arguments"
+                    )
+                    result = self._desktop_failure(outcome, refused=True)
                 else:
                     self._desktop_epoch = self._user_epoch
                     result = await self._local(
@@ -682,6 +822,8 @@ class GbotVoiceBridge:
                             },
                         },
                     )
+                    result = self._native_tool_result("send_task", result)
+                    outcome = "native_" + result["relay"]
             elif name == "end_the_call":
                 result = {"ok": True}
                 if self._on_end_conversation:
@@ -704,12 +846,20 @@ class GbotVoiceBridge:
                         },
                     },
                 )
+                result = self._native_tool_result(name, result)
             else:
                 result = {"ok": False, "error": "voice tool not enabled"}
         except asyncio.CancelledError:
             raise
         except Exception:
-            result = {"ok": False, "error": "voice tool failed"}
+            if outcome == "returned":
+                outcome = "failed"
+            result = (
+                self._desktop_failure(outcome)
+                if original == "ask_grokbot" or name == "send_task"
+                else {"ok": False, "error": "voice tool failed"}
+            )
+        self._tool_outcome(name, outcome)
         if self._stopped or not self.running:
             return
         try:

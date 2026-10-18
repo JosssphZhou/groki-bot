@@ -135,3 +135,25 @@ end-to-end run of this newer integration. See
 
 No recordings, credentials, account identifiers or private device configuration
 are included. Gateway licensing remains MIT; `gateway/LICENSE` is unchanged.
+
+
+### Desktop dispatch diagnostic follow-up
+
+A subsequent offline regression found that the adapter rejected extra arguments
+even when the advertised schema allowed them. It now validates the declared
+schema, then forwards only the canonical `request` field to native `send_task`.
+This is a verified compatibility defect; it has not yet been established as the
+cause of a particular missed desktop request.
+
+Native harness results are now unwrapped and checked against the client protocol:
+only `kind=served` with `output.relay=accepted` means the task was accepted.
+Acceptance does not prove that a message is visibly delivered in the desktop UI.
+Refused, unreachable, malformed and non-served replies become explicit safe
+failures. Unlike the desktop client's early receipt flow, this adapter waits for
+the actual relay result before acknowledging acceptance.
+
+Diagnostic counters log only declared tool names, call-ID presence, integer user
+turn counters, fixed rejection/result enums and local HTTP status codes. They do
+not log task text, arguments, transcripts, IDs, credentials or raw results. An
+internal `speak_text`/debug speech request is not new user authorization to send a
+desktop task; test dispatch through an actual user-input path.

@@ -284,3 +284,146 @@ async def test_real_input_cancels_idle_and_is_forwarded_to_extensions(monkeypatc
         "real request", finished=True
     )
     await b.stop()
+
+
+@pytest.mark.asyncio
+async def test_native_alias_accepts_schema_allowed_extra_fields_without_forwarding_them(
+    monkeypatch,
+):
+    b = make(monkeypatch)
+    b._local = AsyncMock(
+        return_value={"kind": "served", "output": {"status": "accepted"}}
+    )
+    await b._handle_event({"type": "input_audio_buffer.speech_started"})
+    await b._tool(
+        {
+            "name": "ask_grokbot",
+            "call_id": "one",
+            "arguments": '{"task":"offline fixture","language":"zh"}',
+        }
+    )
+    b._local.assert_awaited_once()
+    assert b._local.call_args.args[1]["input"] == {"request": "offline fixture"}
+    await b.stop()
+
+
+@pytest.mark.asyncio
+async def test_native_alias_obeys_explicit_additional_properties_false(monkeypatch):
+    b = make(monkeypatch)
+    declarations = b._executor.declarations()
+    declarations[1]["parameters"]["additionalProperties"] = False
+    b._executor.declarations = lambda: declarations
+    b._configure_tools({})
+    b._local = AsyncMock()
+    await b._handle_event({"type": "input_audio_buffer.speech_started"})
+    await b._tool(
+        {
+            "name": "ask_grokbot",
+            "call_id": "one",
+            "arguments": '{"task":"offline fixture","language":"zh"}',
+        }
+    )
+    b._local.assert_not_awaited()
+    await b.stop()
+
+
+@pytest.mark.asyncio
+async def test_tool_diagnostics_do_not_log_arguments_ids_or_unknown_names(
+    monkeypatch, caplog
+):
+    import logging
+
+    b = make(monkeypatch)
+    caplog.set_level(logging.INFO, logger="stackchan_mcp.gbot_voice_bridge")
+    await b._handle_event(
+        {
+            "type": "response.function_call_arguments.done",
+            "name": "UNTRUSTED_NAME_SENTINEL",
+            "call_id": "PRIVATE_ID_SENTINEL",
+            "arguments": '{"task":"PRIVATE_TASK_SENTINEL"}',
+        }
+    )
+    assert b.metrics["tool_events"] == {"other": 1}
+    assert b.metrics["tool_outcomes"] == {"other:undeclared": 1}
+    assert "SENTINEL" not in caplog.text
+    await b.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "native,expected",
+    [
+        ({"kind": "served", "output": {"relay": "accepted"}}, "accepted"),
+        (
+            {
+                "kind": "served",
+                "output": {"relay": "refused", "spoken": "Cannot accept this task."},
+            },
+            "refused",
+        ),
+        (
+            {
+                "kind": "served",
+                "output": {
+                    "relay": "unreachable",
+                    "spoken": "Desktop is unreachable.",
+                    "errorClass": "network",
+                },
+            },
+            "unreachable",
+        ),
+        ({"kind": "invalid_input", "output": {"relay": "accepted"}}, "unreachable"),
+        ({"kind": "unknown_tool"}, "unreachable"),
+        ({"kind": "served", "output": {"ok": True}}, "unreachable"),
+    ],
+)
+async def test_native_task_uses_client_relay_outcome_not_http_success(
+    monkeypatch, native, expected
+):
+    import json
+
+    b = make(monkeypatch)
+    b._local = AsyncMock(return_value=native)
+    await b._handle_event({"type": "input_audio_buffer.speech_started"})
+    await b._tool(
+        {
+            "name": "ask_grokbot",
+            "call_id": "task",
+            "arguments": '{"task":"offline fixture"}',
+        }
+    )
+    output = next(
+        c.args[0]["item"]["output"]
+        for c in b._send.call_args_list
+        if c.args[0]["type"] == "conversation.item.create"
+    )
+    parsed = json.loads(output)
+    assert parsed["relay"] == expected
+    assert "kind" not in parsed and "output" not in parsed
+    if expected != "accepted":
+        assert parsed.get("spoken")
+    await b.stop()
+
+
+@pytest.mark.asyncio
+async def test_native_task_transport_failure_is_not_accepted(monkeypatch):
+    import json
+
+    b = make(monkeypatch)
+    b._local = AsyncMock(side_effect=RuntimeError("PRIVATE_FAILURE_SENTINEL"))
+    await b._handle_event({"type": "input_audio_buffer.speech_started"})
+    await b._tool(
+        {
+            "name": "ask_grokbot",
+            "call_id": "task",
+            "arguments": '{"task":"offline fixture"}',
+        }
+    )
+    raw = next(
+        c.args[0]["item"]["output"]
+        for c in b._send.call_args_list
+        if c.args[0]["type"] == "conversation.item.create"
+    )
+    assert json.loads(raw)["relay"] == "unreachable"
+    assert "PRIVATE_FAILURE_SENTINEL" not in raw
+    await b.stop()
