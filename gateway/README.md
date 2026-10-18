@@ -64,7 +64,7 @@ Camera tools have no such path and do not work with this firmware.
 
 ## 1. Flash the robot
 
-Follow [path 1 in the Groki Bot README](../README.md#path-1-firmware-only)
+Follow [path 1 in the Groki Bot README](../docs/voice-backends.md#path-1-firmware-only)
 (web flasher in Chrome or Edge; you can skip the API key). Come back here once the robot boots and
 joins your Wi-Fi.
 

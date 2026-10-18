@@ -40,7 +40,7 @@ Groki Bot 固件自己就能对话：刷好固件，在设置页填上自己的 
 
 ## 1. 给机器人刷固件
 
-按 [Groki Bot README 的用法 1](../README.zh-CN.md#用法-1只刷固件) 操作（用 Chrome 或 Edge 打开网页刷写，可以不填 API 密钥）。机器人开机并连上 Wi-Fi 后回到这里。
+按 [Groki Bot README 的用法 1](../docs/voice-backends.zh-CN.md#用法-1只刷固件) 操作（用 Chrome 或 Edge 打开网页刷写，可以不填 API 密钥）。机器人开机并连上 Wi-Fi 后回到这里。
 
 ## 2. 安装网关
 

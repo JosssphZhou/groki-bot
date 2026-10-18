@@ -66,7 +66,7 @@ The same picture as text:
 | Software | Desktop Chrome or Edge for the web flasher and BLE settings page | [uv](https://docs.astral.sh/uv/), Git, libopus; optional wake word model (about 33 MB) | Grok Bot app, signed in; `gbot` CLI from [grok-bot-cli](https://github.com/ScriptedAlchemy/grok-bot-cli) (`npm install --global grok-bot-cli`; needs a recent Node.js) |
 | Keys | OpenAI or Gemini API key, stored in the robot's NVS | Gemini API key in `gateway/.env`; optional shared `STACKCHAN_TOKEN` | None extra: `gbot` uses the app session; nothing Grok-related is stored by the gateway |
 | Turn it on | Settings page, tab "对话" (Conversation): provider and key | Provider "XiaoZhi 服务器", URL `ws://<LAN IP>:8765` | `STACKCHAN_TOOL_BOT=<agent name>` in `gateway/.env`, run `uv run stackchan-gbot-proxy` |
-| Setup steps | [README, path 1](../README.md#path-1-firmware-only) | [gateway/README.md](../gateway/README.md) | [gateway README, Grok Bot hand-off](../gateway/README.md#optional-grok-bot-hand-off) |
+| Setup steps | [README, path 1](voice-backends.md#path-1-firmware-only) | [gateway/README.md](../gateway/README.md) | [gateway README, Grok Bot hand-off](../gateway/README.md#optional-grok-bot-hand-off) |
 
 ## 1. Firmware on its own
 
