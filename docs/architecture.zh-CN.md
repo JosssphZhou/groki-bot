@@ -66,7 +66,7 @@ flowchart LR
 | 软件 | 桌面版 Chrome 或 Edge（网页刷写和蓝牙设置页） | [uv](https://docs.astral.sh/uv/)、Git、libopus；唤醒词模型可选（约 33 MB） | 已登录的 Grok Bot 应用；[grok-bot-cli](https://github.com/ScriptedAlchemy/grok-bot-cli) 提供的 `gbot` 命令行（`npm install --global grok-bot-cli`，需要较新的 Node.js） |
 | 密钥 | OpenAI 或 Gemini API 密钥，存在机器人的 NVS 里 | `gateway/.env` 里的 Gemini API 密钥；可选的共享令牌 `STACKCHAN_TOKEN` | 不需要额外密钥：`gbot` 使用应用的登录状态，网关不保存任何 Grok 相关凭据 |
 | 怎么开启 | 设置页「对话」标签：选服务商、填密钥 | 服务商选「XiaoZhi 服务器」，URL 填 `ws://<局域网 IP>:8765` | 在 `gateway/.env` 写 `STACKCHAN_TOOL_BOT=<智能体名字>`，运行 `uv run stackchan-gbot-proxy` |
-| 操作步骤 | [README 用法 1](../README.zh-CN.md#用法-1只刷固件) | [gateway/README.zh-CN.md](../gateway/README.zh-CN.md) | [网关 README：把任务交给 Grok Bot](../gateway/README.zh-CN.md#可选把任务交给-grok-bot) |
+| 操作步骤 | [README 用法 1](voice-backends.zh-CN.md#用法-1只刷固件) | [gateway/README.zh-CN.md](../gateway/README.zh-CN.md) | [网关 README：把任务交给 Grok Bot](../gateway/README.zh-CN.md#可选把任务交给-grok-bot) |
 
 ## 1. 只用固件
 

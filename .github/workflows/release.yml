@@ -190,7 +190,11 @@ jobs:
           cp "build-$BOARD/stackchan_idf.bin"                   "$outdir/"
           cp "firmware-$BOARD.bin" "$outdir/firmware-${VERSION}-${BOARD}.bin"
           cp "build-$BOARD/flash_args" "$outdir/"
-          cp README.md "$outdir/" 2>/dev/null || true
+          cp README*.md LICENSE THIRD_PARTY_NOTICES.md "$outdir/"
+          cp -R docs "$outdir/"
+          mkdir -p "$outdir/gateway" "$outdir/third_party"
+          cp gateway/README*.md gateway/LICENSE "$outdir/gateway/"
+          cp -R third_party/emotion-ball "$outdir/third_party/"
           echo "=== Firmware size for $BOARD ==="
           python3 -m esp_idf_size "build-$BOARD/stackchan_idf.map" --format=text || true
           (cd "$outdir" && zip -r "../../firmware-${VERSION}-${BOARD}.zip" .)
