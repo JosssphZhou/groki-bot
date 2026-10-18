@@ -9,7 +9,7 @@
 
 Groki Bot は、Grok Bot アプリにつないで直接会話できるオープンソースのデスクトップロボット（M5Stack CoreS3 + Stack-chan ベース）です。ファームウェア、PC 側ゲートウェイ、Grok Bot 連携が 1 つのリポジトリに入っています。
 
-> 目の表現には [aora-bot](https://github.com/sam70361/aora-bot) Emotion Ball のアイリング輪郭を使っています。
+> 目の表現には [aora-bot](https://github.com/sam70361/aora-bot) Emotion Ball の
 
 ## 機能
 
