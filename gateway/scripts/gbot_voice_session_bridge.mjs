@@ -337,7 +337,7 @@ export function createBridge({ port = 18771, rpc = accountRpc, agentId = process
       } catch { return send(400, { ok: false, error: 'invalid_body' }); }
       if (req.method === 'POST' && (!agentId || body.agentId !== agentId)) return send(403, { ok: false, error: 'agent_not_allowed' });
       if (route === 'POST /tool') {
-        if (!toolsEnabled && body.name !== 'send_task') return send(403, {ok: false, error: 'tools_disabled'});
+        if (!toolsEnabled && !['send_task', 'search_conversations'].includes(body.name)) return send(403, {ok: false, error: 'tools_disabled'});
         if (!activeCall || body.callId !== activeCall.callId) return send(403, {ok: false, error: 'call_not_allowed'});
       }
       if (nativePresence) {

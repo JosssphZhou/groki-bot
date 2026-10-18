@@ -72,7 +72,7 @@ test('native event filtering excludes history, other callers, sessions and dupli
   assert.equal(filterNativeEvent({channel:'voice-call-nudge',payload:{agentId:'a',callId:'other',kind:'outcome',update:'fake'}},context),null);
 });
 
-test('desktop opt-in admits only send_task scoped to active call while extra native tools remain off', async () => {
+test('desktop opt-in admits native send and search scoped to active call while unknown tools remain off', async () => {
   const port = await freePort(); let toolCalls=0, presenceCalls=0;
   const sandbox={callerAuthId:async()=> 'owner', presence:async()=>{presenceCalls++;}};
   const server=createBridge({port,agentId:'a',desktopEnabled:true,toolsEnabled:false,sandbox,rpc:async()=>{toolCalls++;return {kind:1};}});
@@ -82,9 +82,10 @@ test('desktop opt-in admits only send_task scoped to active call while extra nat
   try {
     assert.equal((await post('/tool',tool)).status,403);
     assert.equal((await post('/native/presence',{agentId:'a',callId:'call-c',isOnTheLine:true,acceptsOverheard:false})).status,200);
-    assert.equal((await post('/tool',{...tool,name:'search_conversations'})).status,403);
+    assert.equal((await post('/tool',{...tool,name:'unknown_native_tool'})).status,403);
+    assert.equal((await post('/tool',{...tool,name:'search_conversations',input:{query:'fixture'}})).status,200);
     assert.equal((await post('/tool',{...tool,callId:'other'})).status,403);
-    assert.equal((await post('/tool',tool)).status,200); assert.equal(toolCalls,1);
+    assert.equal((await post('/tool',tool)).status,200); assert.equal(toolCalls,2);
     assert.equal((await post('/native/presence',{agentId:'a',callId:'call-c',isOnTheLine:false,acceptsOverheard:false})).status,200);
     assert.equal((await post('/tool',tool)).status,403); assert.equal(presenceCalls,2);
   } finally {await new Promise(r=>server.close(r));}

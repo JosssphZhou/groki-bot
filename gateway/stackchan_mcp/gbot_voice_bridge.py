@@ -230,10 +230,16 @@ class GbotVoiceBridge:
         used = set()
         if not self._local_tools_enabled:
             return declarations
+        native_names = {item.get("name") for item in session.get("tools", [])}
+        native_end = (
+            "end_the_call" in native_names and self._on_end_conversation is not None
+        )
         if self._executor and self._local_tools_enabled:
             for declaration in self._executor.declarations():
                 original = declaration["name"]
-                if original == "ask_grokbot" and not self._desktop_enabled:
+                if original == "ask_grokbot":
+                    continue  # Grok uses its native send_task, never the local Bot alias.
+                if original == "end_conversation" and native_end:
                     continue
                 alias = re.sub(r"[^a-zA-Z0-9_-]", "_", original)
                 if alias in used:
@@ -242,15 +248,14 @@ class GbotVoiceBridge:
                 self._local_tools[alias] = original
                 self._tool_schemas[alias] = declaration.get("parameters", {})
                 declarations.append({**declaration, "name": alias, "type": "function"})
-        extra = os.getenv("STACKCHAN_GBOT_VOICE_TOOLS") == "1"
         for declaration in session.get("tools", []):
             name = declaration.get("name")
-            if name == "send_task":
+            if name in {"send_task", "search_conversations"}:
                 enabled = self._desktop_enabled
             elif name == "end_the_call":
                 enabled = self._on_end_conversation is not None
             else:
-                enabled = extra and self._local_tools_enabled
+                enabled = False  # Unknown native tools require an explicit adapter.
             if not enabled:
                 continue
             if not isinstance(name, str) or name in used:
@@ -263,6 +268,26 @@ class GbotVoiceBridge:
         self.metrics["declared_tools"] = names
         logger.info("Grok voice declared tools=%s", ",".join(names))
         return declarations
+
+    def _provider_tool_instructions(self):
+        if not self._executor or not self._local_tools_enabled:
+            return ""
+        instructions = self._executor.instructions(model_search=False)
+        # Shared local instructions name Gemini's desktop alias. Grok has the
+        # native tool and must not be prompted to call an undeclared alias.
+        instructions = re.sub(
+            r"(?ms)^## Handing tasks to [^\n]+\n\n.*?(?=\n\n|\Z)", "", instructions
+        )
+        instructions = "\n".join(
+            line for line in instructions.splitlines() if "ask_grokbot" not in line
+        )
+        if "end_the_call" in self._remote_tools:
+            instructions = instructions.replace("end_conversation", "end_the_call")
+        return instructions + (
+            "\nOnly call tools declared in this session. For desktop tasks use native "
+            "send_task(request); report acceptance only after relay=accepted. "
+            "If send_task is not declared, desktop delegation is unavailable."
+        )
 
     def _safe_tool_name(self, name):
         return (
@@ -541,7 +566,7 @@ class GbotVoiceBridge:
             config = {
                 "instructions": session.get("instructions", "请用中文简短自然地对话。")
                 + (
-                    "\n\n" + self._executor.instructions(model_search=False)
+                    "\n\n" + self._provider_tool_instructions()
                     if self._executor and self._local_tools_enabled
                     else ""
                 ),
@@ -787,9 +812,8 @@ class GbotVoiceBridge:
             if not _valid_arguments(arguments, self._tool_schemas.get(name, {})):
                 outcome = "invalid_arguments"
                 raise ValueError("invalid tool arguments")
-            if original == "ask_grokbot" or name == "send_task":
-                field = "task" if original == "ask_grokbot" else "request"
-                request = arguments.get(field)
+            if name == "send_task":
+                request = arguments.get("request")
                 if (
                     not self._desktop_enabled
                     or self._user_epoch <= self._desktop_epoch
@@ -856,7 +880,7 @@ class GbotVoiceBridge:
                 outcome = "failed"
             result = (
                 self._desktop_failure(outcome)
-                if original == "ask_grokbot" or name == "send_task"
+                if name == "send_task"
                 else {"ok": False, "error": "voice tool failed"}
             )
         self._tool_outcome(name, outcome)

@@ -82,11 +82,11 @@ async def test_advertised_alias_dispatches_original_local_name(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_native_alias_once_per_real_user_and_no_result_recursion(monkeypatch):
+async def test_native_tool_once_per_real_user_and_no_result_recursion(monkeypatch):
     b = make(monkeypatch)
     b._local = AsyncMock(return_value={"receipt": "accepted"})
     await b._handle_event({"type": "input_audio_buffer.speech_started"})
-    event = {"name": "ask_grokbot", "call_id": "one", "arguments": '{"task":"lookup"}'}
+    event = {"name": "send_task", "call_id": "one", "arguments": '{"request":"lookup"}'}
     await b._tool(event)
     await b._tool(event)
     assert b._local.await_count == 1
@@ -157,7 +157,7 @@ async def test_internal_speech_does_not_grant_desktop_permission(monkeypatch):
     b._local = AsyncMock()
     await b.inject_user_text("read a task result")
     await b._tool(
-        {"name": "ask_grokbot", "call_id": "one", "arguments": '{"task":"do more"}'}
+        {"name": "send_task", "call_id": "one", "arguments": '{"request":"do more"}'}
     )
     b._local.assert_not_awaited()
     await b.stop()
@@ -224,9 +224,9 @@ async def test_native_task_survives_ordinary_interrupt(monkeypatch):
     await b._handle_event(
         {
             "type": "response.function_call_arguments.done",
-            "name": "ask_grokbot",
+            "name": "send_task",
             "call_id": "task",
-            "arguments": '{"task":"fixture"}',
+            "arguments": '{"request":"fixture"}',
         }
     )
     await entered.wait()
@@ -287,7 +287,7 @@ async def test_real_input_cancels_idle_and_is_forwarded_to_extensions(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_native_alias_accepts_schema_allowed_extra_fields_without_forwarding_them(
+async def test_native_tool_accepts_schema_allowed_extra_fields_without_forwarding_them(
     monkeypatch,
 ):
     b = make(monkeypatch)
@@ -297,9 +297,9 @@ async def test_native_alias_accepts_schema_allowed_extra_fields_without_forwardi
     await b._handle_event({"type": "input_audio_buffer.speech_started"})
     await b._tool(
         {
-            "name": "ask_grokbot",
+            "name": "send_task",
             "call_id": "one",
-            "arguments": '{"task":"offline fixture","language":"zh"}',
+            "arguments": '{"request":"offline fixture","language":"zh"}',
         }
     )
     b._local.assert_awaited_once()
@@ -308,19 +308,16 @@ async def test_native_alias_accepts_schema_allowed_extra_fields_without_forwardi
 
 
 @pytest.mark.asyncio
-async def test_native_alias_obeys_explicit_additional_properties_false(monkeypatch):
+async def test_native_tool_obeys_explicit_additional_properties_false(monkeypatch):
     b = make(monkeypatch)
-    declarations = b._executor.declarations()
-    declarations[1]["parameters"]["additionalProperties"] = False
-    b._executor.declarations = lambda: declarations
-    b._configure_tools({})
+    b._tool_schemas["send_task"]["additionalProperties"] = False
     b._local = AsyncMock()
     await b._handle_event({"type": "input_audio_buffer.speech_started"})
     await b._tool(
         {
-            "name": "ask_grokbot",
+            "name": "send_task",
             "call_id": "one",
-            "arguments": '{"task":"offline fixture","language":"zh"}',
+            "arguments": '{"request":"offline fixture","language":"zh"}',
         }
     )
     b._local.assert_not_awaited()
@@ -340,7 +337,7 @@ async def test_tool_diagnostics_do_not_log_arguments_ids_or_unknown_names(
             "type": "response.function_call_arguments.done",
             "name": "UNTRUSTED_NAME_SENTINEL",
             "call_id": "PRIVATE_ID_SENTINEL",
-            "arguments": '{"task":"PRIVATE_TASK_SENTINEL"}',
+            "arguments": '{"request":"PRIVATE_TASK_SENTINEL"}',
         }
     )
     assert b.metrics["tool_events"] == {"other": 1}
@@ -387,9 +384,9 @@ async def test_native_task_uses_client_relay_outcome_not_http_success(
     await b._handle_event({"type": "input_audio_buffer.speech_started"})
     await b._tool(
         {
-            "name": "ask_grokbot",
+            "name": "send_task",
             "call_id": "task",
-            "arguments": '{"task":"offline fixture"}',
+            "arguments": '{"request":"offline fixture"}',
         }
     )
     output = next(
@@ -414,9 +411,9 @@ async def test_native_task_transport_failure_is_not_accepted(monkeypatch):
     await b._handle_event({"type": "input_audio_buffer.speech_started"})
     await b._tool(
         {
-            "name": "ask_grokbot",
+            "name": "send_task",
             "call_id": "task",
-            "arguments": '{"task":"offline fixture"}',
+            "arguments": '{"request":"offline fixture"}',
         }
     )
     raw = next(
@@ -427,3 +424,70 @@ async def test_native_task_transport_failure_is_not_accepted(monkeypatch):
     assert json.loads(raw)["relay"] == "unreachable"
     assert "PRIVATE_FAILURE_SENTINEL" not in raw
     await b.stop()
+
+
+def test_grok_advertises_native_desktop_tool_without_local_alias(monkeypatch):
+    b = make(monkeypatch)
+    assert "send_task" in b._remote_tools
+    assert "ask_grokbot" not in b._local_tools
+
+
+def test_native_end_replaces_duplicate_local_end_only_when_available(monkeypatch):
+    b = make(monkeypatch)
+    b._on_end_conversation = AsyncMock()
+    original = b._executor.declarations()
+    b._executor.declarations = lambda: [
+        *original,
+        {"name": "end_conversation", "parameters": {"type": "object"}},
+    ]
+    declarations = b._configure_tools(
+        {"tools": [{"name": "end_the_call", "parameters": {"type": "object"}}]}
+    )
+    names = {item["name"] for item in declarations}
+    assert "end_the_call" in names and "end_conversation" not in names
+    declarations = b._configure_tools({"tools": []})
+    assert "end_conversation" in {item["name"] for item in declarations}
+
+
+@pytest.mark.parametrize("legacy_flag", ["0", "1"])
+def test_known_native_search_is_enabled_without_opening_unknown_tools(
+    monkeypatch, legacy_flag
+):
+    b = make(monkeypatch)
+    monkeypatch.setenv("STACKCHAN_GBOT_VOICE_TOOLS", legacy_flag)
+    b._configure_tools(
+        {
+            "tools": [
+                {"name": "send_task", "parameters": {"type": "object"}},
+                {"name": "search_conversations", "parameters": {"type": "object"}},
+                {"name": "unknown_remote_action", "parameters": {"type": "object"}},
+            ]
+        }
+    )
+    assert set(b._remote_tools) == {"send_task", "search_conversations"}
+
+
+def test_grok_drops_legacy_wrapper_routing_without_changing_local_instructions(
+    monkeypatch,
+):
+    b = make(monkeypatch)
+    source = "Use move_head for hardware.\nask_grokbot returns at once. Say sent immediately.\nUse ask_grokbot(task) for tasks."
+    b._executor.instructions = lambda **kwargs: source
+    instructions = b._provider_tool_instructions()
+    assert "ask_grokbot" not in instructions and "returns at once" not in instructions
+    assert "Use move_head for hardware." in instructions
+    assert "relay=accepted" in instructions
+    assert b._executor.instructions() == source
+
+
+def test_grok_omits_entire_legacy_desktop_instruction_section(monkeypatch):
+    b = make(monkeypatch)
+    b._executor.instructions = lambda **kwargs: (
+        "Hardware instructions.\n\n## Handing tasks to desktop\n\n"
+        "Call ask_grokbot(task).\nWhen desktop answers you get a system notice.\n\n"
+        "Other local tool instructions."
+    )
+    instructions = b._provider_tool_instructions()
+    assert "system notice" not in instructions
+    assert "Hardware instructions." in instructions
+    assert "Other local tool instructions." in instructions

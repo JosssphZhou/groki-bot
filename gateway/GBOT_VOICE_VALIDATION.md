@@ -64,20 +64,23 @@ Audio connection recovery and credential renewal are not automatic.
 
 ## Local tools and native desktop messages
 
-The shared local executor supplies the same enabled tool declarations and device,
-emotion, tracking, Mac and optional external-task actions to each provider.
-Existing opt-in settings still apply. Grok normalizes dotted tool names on the
+The shared local executor supplies enabled device, emotion, tracking, Mac and
+optional external-task actions to both providers. Existing opt-in settings still
+apply. Grok omits local tools that duplicate its native desktop interface. Grok normalizes dotted tool names on the
 wire and dispatches them back to their original names. Provider-built-in Google
 Search is not available through this adapter; queries may instead be delegated
 to the configured desktop Bot, without claiming that a search already ran.
 
 For native desktop handoff, configure **both** the gateway and helper with
 `STACKCHAN_TOOL_BOT=YOUR_BOT_NAME` and `STACKCHAN_TOOL_BOT_ID=YOUR_AGENT_ID`, with
-`STACKCHAN_GBOT_VOICE_BOT_ID` pointing to that same agent. This enables only the
-native `send_task` route plus call-scoped presence and filtered event streams.
-`ask_grokbot(task)` maps to this native route and does not use a CLI or the older
-HTTP Bot bridge. `STACKCHAN_GBOT_VOICE_TOOLS=1` separately enables additional
-harness tools such as conversation search; it is not needed for desktop handoff.
+`STACKCHAN_GBOT_VOICE_BOT_ID` pointing to that same agent. This enables native `send_task` and `search_conversations` plus call-scoped
+presence and filtered event streams. Grok does not declare or execute the local
+`ask_grokbot` wrapper and does not use a CLI or the older HTTP Bot bridge.
+`end_the_call` uses the existing end-conversation callback; when present it
+replaces the duplicate local `end_conversation` declaration. Unknown native
+tools stay disabled, including when the legacy `STACKCHAN_GBOT_VOICE_TOOLS`
+setting is present. Audio-only diagnostics use `local_tools=False`, which also
+disables desktop access.
 
 The helper filters current-call task outcomes and new owner-authored desktop
 messages. The audio bridge forwards them with the client's native
@@ -129,7 +132,7 @@ end-to-end run of this newer integration. See
 | Login-state audio and interruption | Earlier real cloud audio; current queue and proxy regressions | Acoustic barge-in on the selected firmware |
 | Wake, idle, end, injected speech | Shared proxy lifecycle and offline callback tests | Current robot wake and touch experience |
 | Local tool catalog and dispatch | Shared executor, schema/alias checks, dispatch and concurrency tests | Each enabled physical or desktop action |
-| Native desktop task handoff | `send_task` and `ask_grokbot` alias; offline dispatch/dedup tests | Actual task acceptance and completion |
+| Native desktop task handoff | Native `send_task`; offline dispatch/dedup tests | Actual task acceptance and completion |
 | Desktop replies and typed messages | Filtered helper streams, native envelopes and loopback lifecycle tests; upstream handshake only | Actual account message delivery and narration |
 | Private extensions | Injected executor factory; no private source in this repository | Host-specific extension tests and deployment |
 
@@ -157,3 +160,18 @@ turn counters, fixed rejection/result enums and local HTTP status codes. They do
 not log task text, arguments, transcripts, IDs, credentials or raw results. An
 internal `speak_text`/debug speech request is not new user authorization to send a
 desktop task; test dispatch through an actual user-input path.
+
+
+### Native tool priority
+
+The observed native catalog is `send_task`, `search_conversations` and
+`end_the_call`. Grok uses these native names instead of the temporary local Bot
+alias. Shared instructions referring to `ask_grokbot`, including its old early
+receipt promise, are removed only from the Grok provider's prompt; Gemini's
+catalog and instructions are unchanged. The native task result still requires
+`relay=accepted` before an acceptance announcement.
+
+Conversation search is not a replacement for local browser search. Existing
+hardware, emotion, tracking, Mac and separately configured agent actions remain
+available because the native catalog has no equivalent. This change is checked
+offline and does not itself establish desktop delivery or deployed behavior.
