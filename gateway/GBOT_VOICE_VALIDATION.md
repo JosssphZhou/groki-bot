@@ -122,8 +122,8 @@ late-result rejection, and provider lifecycle hooks. The helper's native
 connection and transcript subscription were separately checked at handshake
 level. A later user-originated deployed test established task acceptance, completion
 arrival, a sent native update, an `async_update` model response and its first
-output audio. The exact completion words heard from the physical speaker have
-not been confirmed. Typed desktop-message delivery and full feature parity
+output audio. The exact completion words were confirmed to play correctly on the physical
+speaker (2026-10-18). Typed desktop-message delivery and full feature parity
 remain unverified. See
 [latency methods and measurements](VOICE_LATENCY_BENCHMARK.md).
 
@@ -135,7 +135,7 @@ remain unverified. See
 | Wake, idle, end, injected speech | Shared proxy lifecycle and offline callback tests | Current robot wake and touch experience |
 | Local tool catalog and dispatch | Shared executor, schema/alias checks, dispatch and concurrency tests | Each enabled physical or desktop action |
 | Native desktop task handoff | Native `send_task`; deployed user requests returned `served` / `accepted`, then completion events | Visible desktop delivery and broader task coverage |
-| Desktop completion replies | Deployed completion → native update sent → `response.created` with `trigger=async_update` → first output audio; about 0.6 s from sent update to first audio in one observed sample | Exact words heard on the physical speaker and broader reliability |
+| Desktop completion replies | Deployed completion → native update sent → `response.created` with `trigger=async_update` → first output audio; about 0.6 s from sent update to first audio in one observed sample; exact words confirmed on the physical speaker (2026-10-18) | Broader reliability |
 | Desktop typed messages | Filtered own-user subscription and offline tests; upstream subscription errors still occur and reconnect independently | Live typed-message delivery; missed messages are not replayed |
 | Private extensions | Injected executor factory; no private source in this repository | Host-specific extension tests and deployment |
 
@@ -193,8 +193,9 @@ Offline regressions cover both stalls and verify that native updates never add
 an extra `response.create`. Safe diagnostics distinguish queued, blocked and sent
 updates, then model response triggers and first audio. A queued or sent update
 alone does not prove that a result was spoken. These fixes do not yet establish
-the cause of the initially reported missing completion narration; deployed
-native result delivery and audible feedback still require observation.
+the cause of the initially reported missing completion narration. Deployed
+native result delivery and audible feedback were subsequently confirmed on the
+physical speaker (2026-10-18).
 
 When an explicit manual response and a native completion are both pending, the
 manual request is sent once first. Native notices wait for that response's
