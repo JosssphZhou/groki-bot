@@ -40,7 +40,7 @@ export function loadAccount() {
   if (!Number.isFinite(claims.exp) || claims.exp * 1000 < Date.now() + 30000) throw new Error('login_expired_open_grok_bot');
   const machineId = decrypt(data['cursor-machine-id']);
   const teamId = active['cursor-selected-team-id'] ? decrypt(active['cursor-selected-team-id']) : undefined;
-  return { token, machineId, teamId };
+  return { token, machineId, teamId, authId: claims.sub };
 }
 
 function checksum(machineId) {
@@ -51,8 +51,10 @@ function checksum(machineId) {
   return bytes.toString('base64url') + machineId;
 }
 
-export async function accountRpc(method, body, { accountLoader = loadAccount, fetcher = fetch } = {}) {
-  if (!Object.values(RPC_ROUTES).includes(method)) throw new Error('rpc_forbidden');
+async function accountRequest(method, body, { accountLoader = loadAccount, fetcher = fetch, signal, streaming = false } = {}) {
+  if (!Object.values(RPC_ROUTES).includes(method) && method !== 'EnsureSandBox' && method !== 'WatchGrokBotTranscripts') throw new Error('rpc_forbidden');
+  if (method === 'EnsureSandBox' && ![JSON.stringify({wake: false, supportsAsleepBox: true}), '{}'].includes(JSON.stringify(body))) throw new Error('rpc_forbidden');
+  if (method === 'WatchGrokBotTranscripts' && (!streaming || body.includeUnlistedAgents !== false || body.inlineBodyMaxBytes !== 65536 || body.cursors?.length !== 1 || typeof body.cursors[0].agentId !== 'string' || Object.keys(body.cursors[0]).some(k => !['agentId', 'generation', 'afterUpdatedSeq'].includes(k)) || body.cursors[0].generation !== 0 || body.cursors[0].afterUpdatedSeq !== '0')) throw new Error('rpc_forbidden');
   const account = accountLoader();
   const headers = {
     authorization: `Bearer ${account.token}`, 'content-type': 'application/json',
@@ -63,13 +65,183 @@ export async function accountRpc(method, body, { accountLoader = loadAccount, fe
     'x-request-id': randomUUID(), 'x-cursor-timezone': Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
   if (account.teamId) headers['x-cursor-team-id'] = account.teamId;
+  let payload = Buffer.from(JSON.stringify(body));
+  if (streaming) {
+    headers['content-type'] = 'application/connect+json';
+    const prefix = Buffer.alloc(5); prefix.writeUInt32BE(payload.length, 1);
+    payload = Buffer.concat([prefix, payload]);
+  }
   const response = await fetcher(BACKEND + method, { method: 'POST', headers,
-    body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(20000) });
+    body: payload, redirect: 'error', signal: signal ?? AbortSignal.timeout(20000) });
   if (!response.ok) {
     // Upstream bodies can contain user content or credentials; never expose them.
     throw new Error(`upstream_http_${response.status}`);
   }
-  return response.json();
+  return response;
+}
+
+export async function accountRpc(method, body, options = {}) {
+  if (method === 'WatchGrokBotTranscripts') throw new Error('rpc_forbidden');
+  return (await accountRequest(method, body, options)).json();
+}
+
+export function validateSandboxUrl(raw) {
+  const url = new URL(raw);
+  const host = url.hostname.toLowerCase();
+  const allowed = host === 'cursor.sh' || host === 'cursor.com' || host.endsWith('.cursor.sh') || host.endsWith('.cursor.com') || host.endsWith('.cursorvm.com');
+  if (url.protocol !== 'https:' || !allowed || url.username || url.password || url.search || url.hash) throw new Error('sandbox_url_forbidden');
+  return url.toString().replace(/\/$/, '');
+}
+
+export class NativeSandboxClient {
+  #connection;
+  #loading;
+  constructor({rpc = accountRpc, fetcher = fetch, accountLoader = loadAccount, connectMode = 'locate'} = {}) {
+    if (!['locate', 'normal'].includes(connectMode)) throw new Error('invalid_connect_mode');
+    this.connectMode = connectMode;
+    this.rpc = rpc; this.fetcher = fetcher; this.accountLoader = accountLoader;
+  }
+  async #connect() {
+    if (this.#connection) return this.#connection;
+    if (!this.#loading) this.#loading = (async () => {
+      const account = this.accountLoader();
+      const raw = await this.rpc('EnsureSandBox', this.connectMode === 'normal' ? {} : {wake: false, supportsAsleepBox: true}, {accountLoader: () => account, fetcher: this.fetcher});
+      if (typeof raw.gatewayToken !== 'string' || !raw.gatewayToken) throw new Error('sandbox_connection_unavailable');
+      const headers = {authorization: `Bearer ${raw.gatewayToken}`};
+      const network = raw.networkToken ?? raw.gatewayHeaders?.['x-anyrun-network-token'];
+      if (typeof network === 'string' && network) headers['x-anyrun-network-token'] = network;
+      this.#connection = {baseUrl: validateSandboxUrl(raw.gatewayUrl), headers, authId: account.authId, responseFields: Object.keys(raw).sort()};
+      return this.#connection;
+    })().finally(() => { this.#loading = undefined; });
+    return this.#loading;
+  }
+  async #fetch(path, options = {}) {
+    const connection = await this.#connect();
+    return this.fetcher(connection.baseUrl + path, {...options, redirect: 'error', headers: {...connection.headers, ...options.headers}});
+  }
+  async openEvents(signal) {
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(), 20000);
+    try {
+      const response = await this.#fetch('/events', {headers: {accept: 'text/event-stream'}, signal: signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal});
+      if (!response.ok || !response.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream')) {
+        await response.body?.cancel(); throw new Error(`upstream_http_${response.status}`);
+      }
+      return response;
+    } finally { clearTimeout(timer); }
+  }
+  async probe() {
+    const connection = await this.#connect();
+    const health = await this.#fetch('/health', {signal: AbortSignal.timeout(20000)});
+    const healthStatus = health.status;
+    await health.body?.cancel();
+    if (!health.ok) throw new Error(`upstream_http_${healthStatus}`);
+    const events = await this.openEvents();
+    const result = {ok: true, responseFields: connection.responseFields, https: true, hostnameAllowed: true, gatewayTokenPresent: true, networkHeaderPresent: Boolean(connection.headers['x-anyrun-network-token']), healthStatus, eventsStatus: events.status, eventStreamContentTypeOk: true};
+    // Handshake only. Do not parse/read the initial snapshot or any messages.
+    await events.body?.cancel();
+    return result;
+  }
+  async presence({agentId, callId, isOnTheLine, acceptsOverheard}) {
+    const response = await this.#fetch('/api/setVoiceCallPresence', {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({id: agentId, callId, isOnTheLine, acceptsOverheard}), signal: AbortSignal.timeout(20000),
+    });
+    await response.body?.cancel();
+    if (!response.ok) throw new Error(`upstream_http_${response.status}`);
+  }
+  async callerAuthId() { return (await this.#connect()).authId; }
+}
+
+export class NativeTranscriptClient {
+  constructor({accountLoader = loadAccount, fetcher = fetch} = {}) { this.accountLoader = accountLoader; this.fetcher = fetcher; }
+  async probe(agentId) {
+    const response = await accountRequest('WatchGrokBotTranscripts', {cursors: [{agentId, generation: 0, afterUpdatedSeq: '0'}], includeUnlistedAgents: false, inlineBodyMaxBytes: 65536}, {accountLoader: this.accountLoader, fetcher: this.fetcher, signal: AbortSignal.timeout(20000), streaming: true});
+    const ok = response.headers.get('content-type')?.startsWith('application/connect+json') === true;
+    await response.body?.cancel();
+    return {ok, status: response.status, connectJson: ok};
+  }
+  async *events(context, signal) {
+    // Empty session is the native owner slot. Non-owner sessions require a
+    // separately verified metadata binding and are deliberately unsupported.
+    if (context.sessionId) throw new Error('session_binding_unavailable');
+    const response = await accountRequest('WatchGrokBotTranscripts', {cursors: [{agentId: context.agentId, generation: 0, afterUpdatedSeq: '0'}], includeUnlistedAgents: false, inlineBodyMaxBytes: 65536}, {accountLoader: this.accountLoader, fetcher: this.fetcher, signal, streaming: true});
+    if (!response.headers.get('content-type')?.startsWith('application/connect+json')) { await response.body?.cancel(); throw new Error('native_stream_format'); }
+    let pending = Buffer.alloc(0);
+    const state = {connected: false, sinceMs: context.sinceMs, generation: null};
+    try {
+      for await (const bytes of response.body) {
+        pending = Buffer.concat([pending, bytes]);
+        if (pending.length > 2 * 1024 * 1024) throw new Error('event_too_large');
+        while (pending.length >= 5) {
+          const size = pending.readUInt32BE(1), flags = pending[0];
+          if (size > 1024 * 1024) throw new Error('event_too_large');
+          if (pending.length < size + 5) break;
+          const data = pending.subarray(5, size + 5); pending = pending.subarray(size + 5);
+          if (flags === 2) return; // End-stream envelope; never expose its text.
+          if (flags !== 0) throw new Error('native_stream_format');
+          const event = filterTranscriptFrame(JSON.parse(data.toString('utf8')), context, state);
+          for (const item of event) yield item;
+        }
+      }
+    } finally { await response.body?.cancel().catch(() => {}); }
+  }
+}
+
+export function filterTranscriptFrame(frame, context, state) {
+  if (frame.connected) {
+    const at = Number(frame.connected.serverTimeMs);
+    state.connected = Number.isFinite(at); state.sinceMs = Math.max(context.sinceMs, at); state.generation = null;
+    return [];
+  }
+  const reset = frame.cleared ?? frame.cursorTooOld;
+  if (reset && reset.agentId === context.agentId && !reset.sessionId) {
+    state.connected = false; state.generation = null;
+    // Fail closed: caller reconnects and establishes a new server-time baseline.
+    throw new Error('transcript_rebaseline_required');
+  }
+  const rows = frame.rows;
+  if (!state.connected || !rows || rows.agentId !== context.agentId || (rows.sessionId || '') !== context.sessionId || rows.replay === true || !Number.isSafeInteger(rows.generation)) return [];
+  if (state.generation !== null && rows.generation !== state.generation) throw new Error('transcript_rebaseline_required');
+  state.generation = rows.generation;
+  const result = [];
+  for (const row of rows.entries ?? []) {
+    // No blob reads, omitted-body reads or history snapshots are performed.
+    if (typeof row.body !== 'string' || row.bodyOmitted) continue;
+    let entry;
+    try { entry = JSON.parse(Buffer.from(row.body, 'base64').toString('utf8')); } catch { continue; }
+    const event = filterNativeEvent({channel: 'transcript', payload: {type: 'appended', entry, ordered: {replicaKey: 'transcript:' + context.agentId, sequence: 0}}}, {...context, sinceMs: state.sinceMs});
+    if (event) result.push(event);
+  }
+  return result;
+}
+
+export function filterNativeEvent(event, context) {
+  const p = event?.payload;
+  if (!p || typeof p !== 'object') return null;
+  if (event.channel === 'voice-call-nudge') {
+    if (p.agentId !== context.agentId || p.callId !== context.callId || !['outcome', 'overheard'].includes(p.kind) || typeof p.update !== 'string' || !p.update.trim()) return null;
+    if (p.kind === 'overheard' && !context.acceptsOverheard) return null;
+    const key = 'nudge:' + p.kind + ':' + p.update;
+    if (context.seen.has(key)) return null;
+    context.seen.add(key);
+    return {channel: 'voice-call-nudge', payload: {agentId: p.agentId, callId: p.callId, kind: p.kind, update: p.update.slice(0, 16000)}};
+  }
+  if (event.channel !== 'transcript' || p.type !== 'appended') return null;
+  // Ordered replica keys are the authoritative agent/session scope in 0.71.2.
+  const replica = p.ordered?.replicaKey;
+  const expected = 'transcript:' + context.agentId + (context.sessionId ? '\0' + context.sessionId : '');
+  if (replica !== expected || !Number.isSafeInteger(p.ordered?.sequence)) return null;
+  const entry = p.entry;
+  if (!entry || entry.kind !== 'message' || entry.role !== 'user' || typeof entry.id !== 'string' || !entry.id || typeof entry.content !== 'string') return null;
+  if ('channel' in entry || 'fromAgent' in entry || 'channelSender' in entry || 'fromUser' in entry || entry.author?.kind !== 'cursor_user' || entry.author.id !== context.authId) return null;
+  // No baseline/snapshot is ever forwarded. Timestamp bounds also reject replay
+  // of old appended frames after a transport reconnect; missing time is closed.
+  if (!Number.isFinite(entry.timestampMs) || entry.timestampMs < context.sinceMs || !entry.content.trim()) return null;
+  const key = 'entry:' + entry.id;
+  if (context.seen.has(key)) return null;
+  context.seen.add(key);
+  return {channel: 'typed-message', payload: {agentId: context.agentId, callId: context.callId, entryId: entry.id, text: entry.content.slice(0, 16000), atMs: entry.timestampMs}};
 }
 
 export function validateBody(route, body) {
@@ -91,23 +263,100 @@ export function validateBody(route, body) {
   return body;
 }
 
-export function createBridge({ port = 18771, rpc = accountRpc, agentId = process.env.STACKCHAN_GBOT_VOICE_BOT_ID || process.env.STACKCHAN_GBOT_VOICE_AGENT_ID || process.env.STACKCHAN_TOOL_BOT_ID, toolsEnabled = process.env.STACKCHAN_GBOT_VOICE_TOOLS === '1' } = {}) {
+export function createBridge({ port = 18771, rpc = accountRpc, agentId = process.env.STACKCHAN_GBOT_VOICE_BOT_ID || process.env.STACKCHAN_GBOT_VOICE_AGENT_ID || process.env.STACKCHAN_TOOL_BOT_ID, toolsEnabled = process.env.STACKCHAN_GBOT_VOICE_TOOLS === '1', desktopEnabled = Boolean(process.env.STACKCHAN_TOOL_BOT?.trim()) || process.env.STACKCHAN_GBOT_VOICE_DESKTOP === '1', sandbox = new NativeSandboxClient({connectMode: 'normal'}), transcript = new NativeTranscriptClient(), sessionId = process.env.STACKCHAN_GBOT_VOICE_SESSION_ID || '' } = {}) {
+  let activeCall = null;
+  let presenceBusy = false;
+  const streams = new Set();
   return createServer(async (req, res) => {
     const send = (status, value) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(JSON.stringify(value)); };
     const address = req.socket.remoteAddress;
     if (address !== '127.0.0.1' || req.headers.origin !== undefined || req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'none' || req.headers.host !== `127.0.0.1:${port}`) return send(403, { ok: false, error: 'local_client_only' });
     const route = `${req.method} ${req.url}`;
-    if (route === 'GET /health') return send(200, { ok: true, source: 'grok-bot-existing-login', clientVersion: '0.71.2', agentId: agentId || null, toolsEnabled });
-    const method = RPC_ROUTES[route];
+    if (route === 'GET /health') return send(200, { ok: true, source: 'grok-bot-existing-login', clientVersion: '0.71.2', agentId: agentId || null, toolsEnabled, desktopEnabled });
+    if (route === 'GET /native/health') {
+      if (!desktopEnabled && !toolsEnabled) return send(403, {ok: false, error: 'desktop_disabled'});
+      try { return send(200, await sandbox.probe()); }
+      catch { return send(502, {ok: false, error: 'native_handshake_failed'}); }
+    }
+    const eventUrl = new URL(req.url, 'http://127.0.0.1');
+    if (req.method === 'GET' && eventUrl.pathname === '/native/events') {
+      if (!desktopEnabled && !toolsEnabled) return send(403, {ok: false, error: 'desktop_disabled'});
+      if ([...eventUrl.searchParams.keys()].some(k => !['agentId', 'callId'].includes(k)) || !activeCall || eventUrl.searchParams.get('agentId') !== agentId || eventUrl.searchParams.get('callId') !== activeCall.callId) return send(403, {ok: false, error: 'call_not_allowed'});
+      const context = activeCall, controller = new AbortController();
+      streams.add(controller); res.on('close', () => controller.abort());
+      try {
+        const upstream = await sandbox.openEvents(controller.signal);
+        res.writeHead(200, {'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'});
+        res.write(': connected\n\n');
+        const typedTask = (async () => {
+          for await (const event of transcript.events(context, controller.signal)) {
+            if (activeCall !== context || controller.signal.aborted) break;
+            if (!res.write('data: ' + JSON.stringify(event) + '\n\n')) throw new Error('slow_consumer');
+          }
+        })().catch(() => {}).finally(() => { controller.abort(); });
+        // This task always terminates through the same abort signal.
+        void typedTask;
+        let pending = '';
+        const decoder = new TextDecoder();
+        for await (const bytes of upstream.body) {
+          if (activeCall !== context) break;
+          pending += decoder.decode(bytes, {stream: true}).replace(/\r\n/g, '\n');
+          if (pending.length > 2 * 1024 * 1024) throw new Error('event_too_large');
+          let end;
+          while ((end = pending.indexOf('\n\n')) !== -1) {
+            const block = pending.slice(0, end); pending = pending.slice(end + 2);
+            const data = block.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trim()).join('\n');
+            if (!data) continue;
+            let event;
+            try { event = filterNativeEvent(JSON.parse(data), context); } catch { continue; }
+            if (event?.channel === 'typed-message') event = null;
+            if (event && !res.write('data: ' + JSON.stringify(event) + '\n\n')) throw new Error('slow_consumer');
+            if (context.seen.size > 2000) context.seen.delete(context.seen.values().next().value);
+          }
+        }
+      } catch {
+        if (!res.headersSent) send(502, {ok: false, error: 'native_stream_failed'});
+      } finally { controller.abort(); streams.delete(controller); res.end(); }
+      return;
+    }
+    const nativePresence = route === 'POST /native/presence';
+    const method = nativePresence ? 'setVoiceCallPresence' : RPC_ROUTES[route];
     if (!method) return send(404, { ok: false, error: 'route_not_found' });
-    if (route === 'POST /tool' && !toolsEnabled) return send(403, { ok: false, error: 'tools_disabled' });
+    if ((route === 'POST /tool' || nativePresence) && !toolsEnabled && !desktopEnabled) return send(403, { ok: false, error: 'tools_disabled' });
     try {
       let raw = '';
       for await (const chunk of req) { raw += chunk; if (Buffer.byteLength(raw) > 65536) return send(413, { ok: false, error: 'body_too_large' }); }
       if (req.method === 'POST' && req.headers['content-type']?.split(';')[0] !== 'application/json') return send(415, { ok: false, error: 'json_required' });
       let body;
-      try { body = validateBody(route, raw ? JSON.parse(raw) : {}); } catch { return send(400, { ok: false, error: 'invalid_body' }); }
+      try {
+        const parsed = raw ? JSON.parse(raw) : {};
+        if (nativePresence) {
+          if (Object.keys(parsed).some(k => !['agentId', 'callId', 'isOnTheLine', 'acceptsOverheard', 'sessionId'].includes(k)) || typeof parsed.agentId !== 'string' || typeof parsed.callId !== 'string' || !/^[A-Za-z0-9_-]{1,120}$/.test(parsed.callId) || typeof parsed.isOnTheLine !== 'boolean' || typeof parsed.acceptsOverheard !== 'boolean' || (parsed.sessionId !== undefined && parsed.sessionId !== sessionId)) throw new Error('invalid_body');
+          body = parsed;
+        } else body = validateBody(route, parsed);
+      } catch { return send(400, { ok: false, error: 'invalid_body' }); }
       if (req.method === 'POST' && (!agentId || body.agentId !== agentId)) return send(403, { ok: false, error: 'agent_not_allowed' });
+      if (route === 'POST /tool') {
+        if (!toolsEnabled && body.name !== 'send_task') return send(403, {ok: false, error: 'tools_disabled'});
+        if (!activeCall || body.callId !== activeCall.callId) return send(403, {ok: false, error: 'call_not_allowed'});
+      }
+      if (nativePresence) {
+        if (presenceBusy) return send(409, {ok: false, error: 'presence_busy'});
+        if (!activeCall && !body.isOnTheLine) return send(403, {ok: false, error: 'call_not_allowed'});
+        if (activeCall && body.callId !== activeCall.callId) return send(409, {ok: false, error: 'call_conflict'});
+        presenceBusy = true;
+        try {
+        const authId = await sandbox.callerAuthId();
+        await sandbox.presence(body);
+        if (body.isOnTheLine) {
+          if (!activeCall) activeCall = {agentId, callId: body.callId, acceptsOverheard: body.acceptsOverheard, sessionId, authId, sinceMs: Date.now(), seen: new Set()};
+          else activeCall.acceptsOverheard = body.acceptsOverheard;
+        } else {
+          activeCall = null; for (const controller of streams) controller.abort();
+        }
+        return send(200, {ok: true});
+        } finally { presenceBusy = false; }
+      }
       const result = await rpc(method, body);
       if (route === 'GET /credential') return send(200, { ok: true, credential: {
         clientSecret: result.clientSecret, expiresAtUnixSeconds: Number(result.expiresAtUnixSeconds),

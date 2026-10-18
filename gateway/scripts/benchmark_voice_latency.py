@@ -374,7 +374,7 @@ async def benchmark(args, backend):
             benchmark_result["configuration"].update(prompt_chars=len(instruction),
                 prompt_sha256=hashlib.sha256(instruction.encode()).hexdigest())
         else:
-            bridge = ObservedGbot(*a, **kwargs)
+            bridge = ObservedGbot(*a, local_tools=False, **kwargs)
         original_send_audio = bridge.send_audio
 
         async def observed_send_audio(pcm):

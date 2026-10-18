@@ -75,7 +75,7 @@ async def run(args):
         record("disconnected")
         dead.set()
 
-    bridge = GbotVoiceBridge(on_audio=on_audio, on_turn_complete=on_complete,
+    bridge = GbotVoiceBridge(local_tools=False, on_audio=on_audio, on_turn_complete=on_complete,
                              on_interrupt=on_interrupt, on_session_dead=on_dead,
                              on_transcript=on_transcript)
 

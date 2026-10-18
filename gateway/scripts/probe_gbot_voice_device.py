@@ -62,7 +62,7 @@ async def run(args):
 
     def factory(**kwargs):
         nonlocal bridge
-        bridge = GbotVoiceBridge(**kwargs, on_transcript=transcript)
+        bridge = GbotVoiceBridge(**kwargs, local_tools=False, on_transcript=transcript)
         return bridge
 
     async def feed(pcm):

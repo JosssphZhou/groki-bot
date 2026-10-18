@@ -738,7 +738,7 @@ async def test_dispatch_set_all_leds_deferred_during_listening(caplog):
         wake_gate_state_getter=lambda: "LISTENING",
     )
 
-    with caplog.at_level(logging.INFO, logger="stackchan_mcp.gemini_live_bridge"):
+    with caplog.at_level(logging.INFO, logger="stackchan_mcp.voice_tools"):
         result = await bridge._dispatch_tool(
             "set_all_leds",
             {"r": 0, "g": 0, "b": 0},

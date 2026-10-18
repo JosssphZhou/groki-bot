@@ -30,7 +30,7 @@ test('loopback bridge rejects cross origin, wrong host, unknown RPC without cons
   } finally { await new Promise(r => server.close(r)); }
 });
 
-test('account RPC only admits three fixed methods and never leaks upstream response body', async () => {
+test('account RPC admits only fixed methods and never leaks upstream response body', async () => {
   let loads = 0; const accountLoader = () => {loads++; return {token:'FAKE_TEST',machineId:'FAKE_MACHINE'};};
   await assert.rejects(accountRpc('SendPrompt', {}, {accountLoader}), /rpc_forbidden/); assert.equal(loads, 0);
   const fetcher = async (url, options) => {
@@ -42,4 +42,69 @@ test('account RPC only admits three fixed methods and never leaks upstream respo
 
 test('tool invocation requires complete bounded line state', () => {
   assert.throws(() => validateBody('POST /tool', {agentId:'a',callId:'c',name:'x',input:{},line:{}}), /invalid_line/);
+});
+
+test('native bootstrap uses fixed read-only request and cancels bodies without reading snapshots', async () => {
+  const {NativeSandboxClient, validateSandboxUrl} = await import('./gbot_voice_session_bridge.mjs');
+  for (const url of ['http://a.cursor.sh', 'https://cursor.sh.evil.test', 'https://u@a.cursor.sh', 'https://a.cursor.sh/?token=x']) assert.throws(() => validateSandboxUrl(url));
+  let cancelled = 0; const paths = [];
+  const client = new NativeSandboxClient({accountLoader:()=>({authId:'owner'}), rpc:async(method,body)=>{
+    assert.equal(method,'EnsureSandBox'); assert.deepEqual(body,{wake:false,supportsAsleepBox:true});
+    return {gatewayUrl:'https://pod.cursorvm.com',gatewayToken:'FAKE',networkToken:'FAKE_NETWORK'};
+  },fetcher:async(url,options)=>{
+    paths.push(new URL(url).pathname); assert.equal(options.redirect,'error');
+    return {ok:true,status:200,headers:new Headers({'content-type':'text/event-stream'}),body:{cancel:async()=>{cancelled++;}},json:()=>assert.fail('must not read body')};
+  }});
+  const result = await client.probe(); assert.equal(result.ok,true); assert.deepEqual(paths,['/health','/events']); assert.equal(cancelled,2);
+  assert.equal(JSON.stringify(result).includes('FAKE'),false);
+});
+
+test('native event filtering excludes history, other callers, sessions and duplicate entries', async () => {
+  const {filterNativeEvent} = await import('./gbot_voice_session_bridge.mjs');
+  const context = {agentId:'a',callId:'call-c',sessionId:'',authId:'owner',sinceMs:100,seen:new Set()};
+  const entry = {id:'e',kind:'message',role:'user',content:'FAKE TEXT',timestampMs:101,author:{kind:'cursor_user',id:'owner'}};
+  const event = {channel:'transcript',payload:{type:'appended',entry,ordered:{replicaKey:'transcript:a',sequence:1}}};
+  assert.equal(filterNativeEvent({...event,payload:{...event.payload,type:'snapshot'}},context),null);
+  assert.equal(filterNativeEvent({...event,payload:{...event.payload,entry:{...entry,author:{kind:'cursor_user',id:'other'}}}},context),null);
+  assert.equal(filterNativeEvent({...event,payload:{...event.payload,entry:{...entry,timestampMs:99}}},context),null);
+  assert.equal(filterNativeEvent({...event,payload:{...event.payload,ordered:{replicaKey:'transcript:a\0other',sequence:1}}},context),null);
+  assert.equal(filterNativeEvent(event,context).channel,'typed-message'); assert.equal(filterNativeEvent(event,context),null);
+  assert.equal(filterNativeEvent({channel:'voice-call-nudge',payload:{agentId:'a',callId:'other',kind:'outcome',update:'fake'}},context),null);
+});
+
+test('desktop opt-in admits only send_task scoped to active call while extra native tools remain off', async () => {
+  const port = await freePort(); let toolCalls=0, presenceCalls=0;
+  const sandbox={callerAuthId:async()=> 'owner', presence:async()=>{presenceCalls++;}};
+  const server=createBridge({port,agentId:'a',desktopEnabled:true,toolsEnabled:false,sandbox,rpc:async()=>{toolCalls++;return {kind:1};}});
+  await new Promise(r=>server.listen(port,'127.0.0.1',r));
+  const post=async(path,body)=>fetch(`http://127.0.0.1:${port}`+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  const tool={agentId:'a',callId:'call-c',name:'send_task',input:{request:'FAKE'},line:{theyJustTalked:false,newsOwed:false,receiptOwed:false,alreadySpokeThisTurn:false}};
+  try {
+    assert.equal((await post('/tool',tool)).status,403);
+    assert.equal((await post('/native/presence',{agentId:'a',callId:'call-c',isOnTheLine:true,acceptsOverheard:false})).status,200);
+    assert.equal((await post('/tool',{...tool,name:'search_conversations'})).status,403);
+    assert.equal((await post('/tool',{...tool,callId:'other'})).status,403);
+    assert.equal((await post('/tool',tool)).status,200); assert.equal(toolCalls,1);
+    assert.equal((await post('/native/presence',{agentId:'a',callId:'call-c',isOnTheLine:false,acceptsOverheard:false})).status,200);
+    assert.equal((await post('/tool',tool)).status,403); assert.equal(presenceCalls,2);
+  } finally {await new Promise(r=>server.close(r));}
+});
+
+test('server transcript stream drops replay and pre-connection entries and requires rebaseline after clear', async()=>{
+  const {filterTranscriptFrame,NativeTranscriptClient}=await import('./gbot_voice_session_bridge.mjs');
+  const context={agentId:'a',callId:'call-c',sessionId:'',authId:'owner',sinceMs:100,seen:new Set()};
+  const state={};
+  assert.deepEqual(filterTranscriptFrame({connected:{serverTimeMs:'110'}},context,state),[]);
+  const row=(time,id='e')=>({body:Buffer.from(JSON.stringify({id,kind:'message',role:'user',content:'FAKE',timestampMs:time,author:{kind:'cursor_user',id:'owner'}})).toString('base64')});
+  const rows={agentId:'a',sessionId:'',generation:1,entries:[row(120)]};
+  assert.deepEqual(filterTranscriptFrame({rows:{...rows,replay:true}},context,state),[]);
+  assert.deepEqual(filterTranscriptFrame({rows:{...rows,entries:[row(109)]}},context,state),[]);
+  assert.equal(filterTranscriptFrame({rows},context,state).length,1);
+  assert.deepEqual(filterTranscriptFrame({rows},context,state),[]);
+  assert.throws(()=>filterTranscriptFrame({cleared:{agentId:'a',newGeneration:2}},context,state),/rebaseline/);
+  assert.deepEqual(filterTranscriptFrame({rows:{...rows,entries:[row(130,'e2')]}},context,state),[]);
+  let fetched=false;
+  const client=new NativeTranscriptClient({fetcher:async()=>{fetched=true;},accountLoader:()=>({})});
+  await assert.rejects(async()=>{for await(const ignored of client.events({...context,sessionId:'unverified'})) {}},/session_binding/);
+  assert.equal(fetched,false);
 });
