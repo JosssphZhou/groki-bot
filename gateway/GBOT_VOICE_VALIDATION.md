@@ -198,3 +198,15 @@ manual request is sent once first. Native notices wait for that response's
 normal boundary. An already-requested manual response also holds native notices;
 no additional response request is manufactured for the native notice itself.
 This prevents a silent native update from starving an existing tool reply.
+
+### Native channel availability
+
+The audio connection remains usable while the separate desktop sandbox is
+unreachable. Native presence and event-stream registration retry in the
+background at five-second intervals. Desktop readiness requires both successful
+presence registration and a connected event stream. Until then, `send_task` and
+`search_conversations` return an explicit unavailable result without posting a
+task; local audio and hardware tools remain available. Restoring the native
+channel enables these tools automatically. Stopping voice cancels registration,
+retry and event listening, and attempts bounded presence cleanup. No CLI or
+alternate desktop transport is used as a fallback.

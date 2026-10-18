@@ -893,7 +893,16 @@ class GbotVoiceBridge:
             if not _valid_arguments(arguments, self._tool_schemas.get(name, {})):
                 outcome = "invalid_arguments"
                 raise ValueError("invalid tool arguments")
-            if name == "send_task":
+            if name in {"send_task", "search_conversations"} and not (
+                self._native and self._native.ready
+            ):
+                outcome = "native_not_ready"
+                result = (
+                    self._desktop_failure("native_not_ready")
+                    if name == "send_task"
+                    else {"ok": False, "error": "native desktop channel is not ready"}
+                )
+            elif name == "send_task":
                 request = arguments.get("request")
                 if (
                     not self._desktop_enabled

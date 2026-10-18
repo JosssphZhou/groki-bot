@@ -140,3 +140,64 @@ async def test_native_presence_and_sse_lifecycle():
     finally:
         release.set()
         await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_unavailable_presence_does_not_block_channel_start_and_stop_cancels():
+    channel = NativeVoiceChannel(
+        None, "http://127.0.0.1:18771", "agent", "call", AsyncMock()
+    )
+    channel._presence = AsyncMock(side_effect=RuntimeError("offline"))
+    await asyncio.wait_for(channel.start(), 0.1)
+    await asyncio.sleep(0)
+    assert not channel.ready
+    await channel.close()
+    assert channel._task.done()
+
+
+@pytest.mark.asyncio
+async def test_presence_retry_recovers_readiness_without_restarting_voice():
+    channel = NativeVoiceChannel(
+        None, "http://127.0.0.1:18771", "agent", "call", AsyncMock()
+    )
+    channel._retry_delay = 0.001
+    calls = 0
+
+    async def presence(on):
+        nonlocal calls
+        if on:
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("offline")
+
+    async def listen():
+        channel.connected.set()
+        await asyncio.Event().wait()
+
+    channel._presence = presence
+    channel._listen = listen
+    await channel.start()
+    await asyncio.wait_for(channel.connected.wait(), 0.2)
+    assert channel.ready and calls == 2
+    await channel.close()
+    assert not channel.ready and channel._task.done()
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_inflight_registration_before_any_late_ready():
+    channel = NativeVoiceChannel(
+        None, "http://127.0.0.1:18771", "agent", "call", AsyncMock()
+    )
+    entered = asyncio.Event()
+
+    async def presence(on):
+        if on:
+            entered.set()
+            await asyncio.Event().wait()
+
+    channel._presence = presence
+    await channel.start()
+    await entered.wait()
+    await asyncio.wait_for(channel.close(), 0.1)
+    assert channel._task.cancelled()
+    assert not channel.ready

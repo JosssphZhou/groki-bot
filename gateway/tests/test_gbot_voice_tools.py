@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 import asyncio
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 import pytest
 
@@ -48,6 +49,7 @@ def make(monkeypatch, enabled=True):
         tool_executor=Executor(),
     )
     b._send = AsyncMock()
+    b._native = SimpleNamespace(ready=True, close=AsyncMock())
     b.running = True
     b._configure_tools(
         {
@@ -604,4 +606,25 @@ async def test_existing_manual_request_precedes_native_without_starvation(monkey
         "async_update.add",
     ]
     assert not b._pending_updates and not b._response_requested
+    await b.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name,args",
+    [("send_task", '{"request":"fixture"}'), ("search_conversations", "{}")],
+)
+async def test_native_not_ready_rejects_desktop_tools_without_post(
+    monkeypatch, name, args
+):
+    from types import SimpleNamespace
+
+    b = make(monkeypatch)
+    b._remote_tools["search_conversations"] = {"parameters": {"type": "object"}}
+    b._native = SimpleNamespace(ready=False, close=AsyncMock())
+    b._local = AsyncMock()
+    await b._handle_event({"type": "input_audio_buffer.speech_started"})
+    await b._tool({"name": name, "call_id": "offline", "arguments": args})
+    b._local.assert_not_awaited()
+    assert b.metrics["tool_outcomes"][name + ":native_not_ready"] == 1
     await b.stop()

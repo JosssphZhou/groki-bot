@@ -72,6 +72,8 @@ class NativeVoiceChannel:
         self._task = None
         self._closed = False
         self._registered = False
+        self._presence_owned = False
+        self._retry_delay = 5.0
         self._typed_seen = set()
         self.connected = asyncio.Event()
 
@@ -93,10 +95,30 @@ class NativeVoiceChannel:
             if result.get("ok") is False:
                 raise RuntimeError("native_presence_rejected")
 
+    @property
+    def ready(self):
+        return not self._closed and self._registered and self.connected.is_set()
+
     async def start(self):
-        await self._presence(True)
-        self._registered = True
-        self._task = asyncio.create_task(self._listen(), name="gbot-native-events")
+        # Native sandbox availability must not hold the independent audio socket.
+        self._task = asyncio.create_task(self._run(), name="gbot-native-events")
+
+    async def _run(self):
+        while not self._closed:
+            try:
+                self._presence_owned = True
+                await self._presence(True)
+                self._registered = True
+                await self._listen()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("Grok native channel state=unavailable retry=pending")
+            finally:
+                self._registered = False
+                self.connected.clear()
+            if not self._closed:
+                await asyncio.sleep(self._retry_delay)
 
     async def accept_event(self, message):
         parsed = update_event(message, self.agent_id, self.call_id)
@@ -111,40 +133,29 @@ class NativeVoiceChannel:
 
     async def _listen(self):
         query = urlencode({"agentId": self.agent_id, "callId": self.call_id})
-        while not self._closed:
-            try:
-                async with self._http.get(
-                    self._url + "/native/events?" + query,
-                    allow_redirects=False,
-                    timeout=aiohttp.ClientTimeout(
-                        total=None, sock_connect=10, sock_read=60
-                    ),
-                ) as response:
-                    if response.status != 200:
-                        raise RuntimeError("native_events_unavailable")
-                    self.connected.set()
+        async with self._http.get(
+            self._url + "/native/events?" + query,
+            allow_redirects=False,
+            timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=60),
+        ) as response:
+            if response.status != 200:
+                raise RuntimeError("native_events_unavailable")
+            self.connected.set()
+            logger.info("Grok native channel state=ready")
+            data, length = [], 0
+            async for raw in response.content:
+                if self._closed:
+                    break
+                line = raw.decode("utf-8").rstrip("\r\n")
+                if not line:
+                    if data:
+                        await self.accept_event(json.loads("\n".join(data)))
                     data, length = [], 0
-                    async for raw in response.content:
-                        if self._closed:
-                            break
-                        line = raw.decode("utf-8").rstrip("\r\n")
-                        if not line:
-                            if data:
-                                await self.accept_event(json.loads("\n".join(data)))
-                            data, length = [], 0
-                        elif line.startswith("data:"):
-                            length += len(line)
-                            if length > 70000:
-                                raise ValueError("native_event_too_large")
-                            data.append(line[5:].lstrip())
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                pass  # Never expose authenticated URL, backend data or transport error text.
-            finally:
-                self.connected.clear()
-            if not self._closed:
-                await asyncio.sleep(0.5)
+                elif line.startswith("data:"):
+                    length += len(line)
+                    if length > 70000:
+                        raise ValueError("native_event_too_large")
+                    data.append(line[5:].lstrip())
 
     async def close(self):
         self._closed = True
@@ -152,8 +163,9 @@ class NativeVoiceChannel:
         if self._task and self._task is not asyncio.current_task():
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
-        if self._registered:
-            self._registered = False
+        self._registered = False
+        if self._presence_owned:
+            self._presence_owned = False
             try:
                 await asyncio.wait_for(self._presence(False), 3)
             except Exception:
