@@ -1,15 +1,35 @@
-English · [中文](README.zh-CN.md) · [日本語](README.ja.md)
+English | [中文](README.zh-CN.md) | [日本語](README.ja.md)
 
 # Groki Bot
 
-Everything for the Groki Bot desktop robot (M5Stack CoreS3 with a Stack-chan base) in one repository: the robot **firmware**, the **gateway** that runs on your computer, and the link that lets the robot hand tasks to an agent in the **Grok Bot** app.
+Everything for the Groki Bot desktop robot (M5Stack CoreS3 with a Stack-chan base) in one repository: the robot **firmware**, the **gateway** that runs on your computer, and the link that lets the robot hand tasks to an agent in the **Grok Bot** app. Groki now supports native voice powered by the Grok bot backend, letting you talk to the robot directly. On a Mac signed in to the Grok Bot desktop app, voice runs through your existing login session: no separate xAI voice API key needed and no firmware reflash required.
 
 ![Groki Bot pixel-art banner: a desktop robot shaped like a retro CRT computer, with a round white face on the screen](docs/images/banner.png)
 <!-- demo-video
      Demo video to be added. After publishing, place the embed code (iframe or video) below this comment block.
 -->
 
-## Three ways to use it
+## Quick start: talk through Grok Bot (macOS)
+
+What you need: a Groki Bot (CoreS3 with a Stack-chan base), a USB-C cable, desktop Chrome or Edge, a Mac on the same Wi-Fi signed in to the Grok Bot desktop app (tested with version 0.71.2; uses internal APIs, so app updates may break it), Node.js, and [uv](https://docs.astral.sh/uv/).
+
+1. Flash the firmware and set up Wi-Fi: steps 1 and 2 of [path 1](#path-1-firmware-only). You can skip the API key.
+2. Install the gateway on the Mac: `git clone` this repository, `cd groki-bot/gateway`, `uv sync --all-extras`, `cp .env.example .env`.
+3. In `gateway/.env`, set the Grok voice backend with your own agent name and ID (details in [gateway setup](gateway/README.md#grok-bot-login-voice-macos)):
+
+   ```dotenv
+   STACKCHAN_VOICE_BACKEND=gbot
+   STACKCHAN_GBOT_VOICE_BOT_ID=YOUR_AGENT_ID
+   STACKCHAN_TOOL_BOT=assistant
+   STACKCHAN_TOOL_BOT_ID=YOUR_AGENT_ID
+   ```
+
+4. In a second terminal, start the login helper from `gateway/` and keep it running (pass the same values; it does not read `.env`): `node scripts/gbot_voice_session_bridge.mjs`.
+5. Start the gateway as in [path 2](#path-2-firmware--gateway), point the robot at `ws://<your computer's LAN IP>:8765` in the BLE settings page, and say "Hi Grok".
+
+Gemini stays the default backend; set `STACKCHAN_VOICE_BACKEND=gemini` to switch back. Other voice options (OpenAI Realtime, Gemini Live, Grok Bot hand-off through the `gbot` CLI) are below under [Other voice backends](#other-voice-backends).
+
+## Other voice backends
 
 Each path adds to the one before it. Start with path 1.
 
@@ -66,7 +86,7 @@ The gateway also supports `STACKCHAN_VOICE_BACKEND=gbot`: use the signed-in Grok
 
 Grok voice directly uses native `send_task`, `search_conversations`, and `end_the_call`, alongside shared local hardware and optional Mac tools. It does not require the `gbot` CLI; the CLI forwarding service remains an optional path for Gemini. See [gateway setup](gateway/README.md#grok-bot-login-voice-macos).
 
-Real task acceptance, delivery of completion results to the voice model, and model-generated output audio have been observed in testing. The exact words heard on the physical speaker have not been confirmed for that test. Desktop typed-message subscriptions can still fail; they reconnect separately and do not replay messages missed during a disconnect. CoreS3 firmware may stop microphone capture while speaking, so pure acoustic interruption is not established. See [validation limits](gateway/GBOT_VOICE_VALIDATION.md).
+Real task acceptance, delivery of completion results to the voice model, and model-generated output audio have been observed in testing. The spoken words have been confirmed to play correctly on the physical speaker (2026-10-18). Desktop typed-message subscriptions can still fail; they reconnect separately and do not replay messages missed during a disconnect. CoreS3 firmware may stop microphone capture while speaking, so pure acoustic interruption is not established. See [validation limits](gateway/GBOT_VOICE_VALIDATION.md).
 
 ### Letting Claude Code change the face directly
 

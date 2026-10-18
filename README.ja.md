@@ -1,10 +1,12 @@
-[English](README.md) · [中文](README.zh-CN.md) · 日本語
+[English](README.md) | [中文](README.zh-CN.md) | 日本語
 
 # Groki Bot
 
 Groki Bot デスクトップロボットのファームウェア、ゲートウェイ、Grok Bot 連携をまとめたリポジトリです。M5Stack の CoreS3 / AtomS3R / AtomS3 / StopWatch (C152) で動く
 Stack-chan ファームウェア。ESP-IDF 5.5 / C++20。AI 音声対話 (OpenAI / Gemini / XiaoZhi)、
 BLE / Wi-Fi / SoftAP の 3 経路設定、デバイス側 OTA をサポートします。
+
+Groki は Grok bot バックエンドによるネイティブ音声に対応し、デスクトップアプリと連携してロボットと直接会話できるようになりました。Grok Bot にログイン済みの Mac であれば既存のログイン状態で音声を利用でき、追加の xAI 音声 API キー設定やファームウェアの再書き込みは不要です。
 
 > 目の表現には [aora-bot](https://github.com/sam70361/aora-bot) Emotion Ball の
 > アイリング輪郭を使っています。このデータは Emotion Ball Community License に基づく
@@ -13,13 +15,37 @@ BLE / Wi-Fi / SoftAP の 3 経路設定、デバイス側 OTA をサポートし
 > 全体の構成と通信は [docs/architecture.md](docs/architecture.md)（英語）を参照してください。
 > ウェイクワードは既定で「Hi Grok」、`gateway/.env` に `STACKCHAN_WAKE_PHRASE=hey groki` を設定すると「Hey Groki」になります。
 
+## クイックスタート：Grok Bot で会話する（macOS のみ）
+
+必要なもの：Groki Bot 本体（CoreS3 + Stack-chan ベース）、USB-C ケーブル、デスクトップ版 Chrome または Edge、同じ Wi-Fi 上で Grok Bot アプリにログイン済みの Mac（動作確認バージョン 0.71.2、内部 API を使用しているためアプリのアップデートにより動作しなくなる可能性があります）、Node.js、[uv](https://docs.astral.sh/uv/)。
+
+1. ファームウェアの書き込みと Wi-Fi 設定：[path 1](README.md#path-1-firmware-only) のステップ 1 と 2 を行います。API キーの入力はスキップできます。
+2. Mac にゲートウェイをインストール：本リポジトリを `git clone` し、`cd groki-bot/gateway`、`uv sync --all-extras`、`cp .env.example .env` を実行します。
+3. `gateway/.env` に以下の 4 項目を設定し、ご自身のエージェント名と ID に置き換えます（詳細は [gateway setup](gateway/README.md#grok-bot-login-voice-macos) を参照）：
+
+   ```dotenv
+   STACKCHAN_VOICE_BACKEND=gbot
+   STACKCHAN_GBOT_VOICE_BOT_ID=YOUR_AGENT_ID
+   STACKCHAN_TOOL_BOT=assistant
+   STACKCHAN_TOOL_BOT_ID=YOUR_AGENT_ID
+   ```
+
+4. 別のターミナルを開き、`gateway/` からログインヘルパーを起動して常駐させます（同じ値を渡してください。`.env` は読み込まれません）：`node scripts/gbot_voice_session_bridge.mjs`。
+5. [path 2](README.md#path-2-firmware--gateway) と同様にゲートウェイを起動し、BLE 設定ページでロボットの接続先を `ws://<コンピュータの LAN IP>:8765` に設定して、「Hi Grok」と話しかけます。
+
+デフォルトのバックエンドは Gemini のままです。`STACKCHAN_VOICE_BACKEND=gemini` を設定することでいつでも戻せます。その他の音声オプション（OpenAI Realtime、Gemini Live、`gbot` CLI によるタスク転送）は後述の [他の音声バックエンド](#他の音声バックエンド) を参照してください。
+
 ### Grok Bot のログイン状態で音声対話
 
 macOS でログイン済みの Grok Bot アプリがあれば、ゲートウェイの `STACKCHAN_VOICE_BACKEND=gbot` を指定して音声対話を利用できます。別途 xAI 音声 API キーを設定する必要はありません。デフォルトは Gemini のままで、`STACKCHAN_VOICE_BACKEND=gemini` に戻せます。ゲートウェイの切り替えにファームウェアの再書き込みは不要です。
 
 Grok 側はネイティブの `send_task`、`search_conversations`、`end_the_call` と共通のローカル機器ツールを直接使用します。`gbot` CLI は不要で、CLI 転送サービスは Gemini 側のオプション連携機能として残されています。[セットアップ手順](gateway/README.md#grok-bot-login-voice-macos)（英語）を参照してください。
 
-実機検証において、タスクの受付、完了結果の音声モデルへの伝達、およびモデルによる出力音声の生成は確認済みですが、その結果が実機スピーカーから具体的にどう発話されたかは未確認です。デスクトップのテキストメッセージ購読は一時的にエラーとなる場合があり、その際は個別に再接続されます（切断中に届かなかったメッセージの再送は行われません）。CoreS3 ファームウェアは発話中にマイク入力を停止する場合があるため、声だけの割り込みが動作するとは保証できません。詳細は[検証範囲](gateway/GBOT_VOICE_VALIDATION.md)を参照してください。
+実機検証において、タスクの受付、完了結果の音声モデルへの伝達、およびモデルによる出力音声の生成は確認済みです。実機スピーカーでの具体的な発話内容も正常であることを確認しました（2026-10-18）。デスクトップのテキストメッセージ購読は一時的にエラーとなる場合があり、その際は個別に再接続されます（切断中に届かなかったメッセージの再送は行われません）。CoreS3 ファームウェアは発話中にマイク入力を停止する場合があるため、声だけの割り込みが動作するとは保証できません。詳細は[検証範囲](gateway/GBOT_VOICE_VALIDATION.md)を参照してください。
+
+## 他の音声バックエンド
+
+OpenAI Realtime、Gemini Live、`gbot` CLI によるタスク転送は [英文 README](README.md#other-voice-backends) を参照してください。
 
 ## Web Flasher / 設定ページ
 

@@ -1,15 +1,35 @@
-[English](README.md) · 中文 · [日本語](README.ja.md)
+[English](README.md) | 中文 | [日本語](README.ja.md)
 
 # Groki Bot
 
-Groki Bot 桌面机器人（M5Stack CoreS3 加 Stack-chan 底座）的全部内容都在这一个仓库里：机器人**固件**、运行在电脑上的**网关**，以及让机器人把任务交给 **Grok Bot** 应用里智能体的联动机制。
+Groki Bot 桌面机器人（M5Stack CoreS3 加 Stack-chan 底座）的全部内容都在这一个仓库里：机器人**固件**、运行在电脑上的**网关**，以及让机器人把任务交给 **Grok Bot** 应用里智能体的联动机制。 Groki 现已支持 Grok bot 后端原生语音，连接桌面端应用即可直接和机器人对话。在已登录 Grok Bot 的 Mac 上，语音直接走现有登录状态：无需额外配置 xAI 语音 API 密钥，也无需重刷固件。
 
 ![Groki Bot 像素风头图：CRT 复古电脑造型的桌面机器人，屏幕上是白色圆脸](docs/images/banner.png)
 <!-- demo-video
      演示视频后补。发布后把嵌入代码（iframe 或 video）放在本注释块下方。
 -->
 
-## 三种用法
+## 快速开始：用 Grok Bot 对话（仅 macOS）
+
+需要：一台 Groki Bot（CoreS3 加 Stack-chan 底座）、USB-C 线、桌面版 Chrome 或 Edge、同一 Wi-Fi 下已登录 Grok Bot 应用的 Mac（测试版本 0.71.2，用的是内部接口，应用升级后可能失效）、Node.js 和 [uv](https://docs.astral.sh/uv/)。
+
+1. 刷固件并配好 Wi-Fi：照[用法 1](#用法-1只刷固件)的第 1、2 步做，API 密钥可以不填。
+2. 在 Mac 上装网关：`git clone` 本仓库，`cd groki-bot/gateway`，`uv sync --all-extras`，`cp .env.example .env`。
+3. 在 `gateway/.env` 里写下面 4 项，换成你自己的 agent 名字和 ID（详见[网关说明](gateway/README.zh-CN.md#grok-bot-登录态语音macos)）：
+
+   ```dotenv
+   STACKCHAN_VOICE_BACKEND=gbot
+   STACKCHAN_GBOT_VOICE_BOT_ID=YOUR_AGENT_ID
+   STACKCHAN_TOOL_BOT=助手
+   STACKCHAN_TOOL_BOT_ID=YOUR_AGENT_ID
+   ```
+
+4. 另开一个终端，在 `gateway/` 下启动登录桥并保持运行（把同样的值传进去，它不读 `.env`）：`node scripts/gbot_voice_session_bridge.mjs`。
+5. 按[用法 2](#用法-2固件加网关)启动网关，在蓝牙设置页把机器人指向 `ws://<电脑局域网 IP>:8765`，然后说"Hi Grok"。
+
+默认后端仍是 Gemini，把 `STACKCHAN_VOICE_BACKEND` 设回 `gemini` 即可切回。其他语音方式（OpenAI Realtime、Gemini Live、用 `gbot` 命令行转交任务）在下面的[其他语音后端](#其他语音后端)一节。
+
+## 其他语音后端
 
 每种用法都在前一种的基础上增加，先从用法 1 开始。
 
@@ -64,7 +84,7 @@ Grok 登录态语音直接使用原生桌面通道，按下节配置即可，不
 
 Grok 语音直接使用原生 `send_task`、`search_conversations` 与 `end_the_call`，并复用本地硬件与可选的 Mac 工具，不需要 `gbot` 命令行。CLI 转发服务保留作为 Gemini 的可选联动路径。安装步骤见[网关说明](gateway/README.zh-CN.md#grok-bot-登录态语音macos)。
 
-现场测试已观察到任务受理、完成结果送入语音模型及生成输出音频，但实体喇叭最终播报的具体内容尚未确认。桌面文字订阅仍可能报错，会自动独立重连；断开期间遗漏的消息不会补发。CoreS3 固件在发声时可能停止麦克风采集，因此目前尚未验证纯声学打断。详见[验证范围](gateway/GBOT_VOICE_VALIDATION.md)。
+现场测试已观察到任务受理、完成结果送入语音模型及生成输出音频，实体扬声器播报的具体念词已确认正常（2026-10-18）。桌面文字订阅仍可能报错，会自动独立重连；断开期间遗漏的消息不会补发。CoreS3 固件在发声时可能停止麦克风采集，因此目前尚未验证纯声学打断。详见[验证范围](gateway/GBOT_VOICE_VALIDATION.md)。
 
 ### 让 Claude Code 直接改表情
 
