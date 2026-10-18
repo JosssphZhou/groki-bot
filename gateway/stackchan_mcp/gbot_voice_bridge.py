@@ -527,6 +527,8 @@ class GbotVoiceBridge:
         return result
 
     async def start(self):
+        stage = "account_requests"
+        self.metrics["startup_stage"] = stage
         trace = aiohttp.TraceConfig()
 
         async def reject_redirect(*_args):
@@ -551,6 +553,8 @@ class GbotVoiceBridge:
                     },
                 ),
             )
+            stage = "voice_websocket"
+            self.metrics["startup_stage"] = stage
             credential = minted["credential"]
             url = voice_url_with_model(credential["websocketUrl"], credential["model"])
             if float(credential["expiresAtUnixSeconds"]) <= time.time() + 5:
@@ -562,7 +566,11 @@ class GbotVoiceBridge:
                 max_msg_size=8 * 1024 * 1024,
             )
             del credential
+            stage = "configure_tools"
+            self.metrics["startup_stage"] = stage
             declarations = self._configure_tools(session)
+            stage = "provider_instructions"
+            self.metrics["startup_stage"] = stage
             config = {
                 "instructions": session.get("instructions", "请用中文简短自然地对话。")
                 + (
@@ -588,10 +596,14 @@ class GbotVoiceBridge:
                 config["audio"]["input"]["transcription"].pop("language_hint")
             if os.getenv("STACKCHAN_GBOT_VOICE_NAME"):
                 config["voice"] = os.environ["STACKCHAN_GBOT_VOICE_NAME"]
+            stage = "session_update"
+            self.metrics["startup_stage"] = stage
             await self._send({"type": "session.update", "session": config})
             self.running = True
             self._task = asyncio.create_task(self._receive())
             if self._desktop_enabled:
+                stage = "native_presence"
+                self.metrics["startup_stage"] = stage
                 self._native = NativeVoiceChannel(
                     self._http,
                     self.url,
@@ -600,10 +612,28 @@ class GbotVoiceBridge:
                     self._native_update,
                 )
                 await self._native.start()
+            self.metrics["startup_stage"] = "started"
         except asyncio.CancelledError:
             await self.stop()
             raise
-        except Exception:
+        except Exception as exc:
+            error_type = type(exc).__name__
+            if error_type not in {
+                "TypeError",
+                "AttributeError",
+                "ValueError",
+                "RuntimeError",
+                "KeyError",
+                "ClientResponseError",
+                "WSServerHandshakeError",
+                "TimeoutError",
+                "ClientConnectorError",
+            }:
+                error_type = "other"
+            self.metrics["startup_error_type"] = error_type
+            logger.warning(
+                "Grok voice startup failed stage=%s error_type=%s", stage, error_type
+            )
             await self.stop()
             raise RuntimeError(
                 "Grok Bot voice startup failed (details redacted)"

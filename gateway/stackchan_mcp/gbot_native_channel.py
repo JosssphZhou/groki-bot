@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import time
 import uuid
 from urllib.parse import urlencode
 
 import aiohttp
+
+logger = logging.getLogger(__name__)
 
 
 def update_event(message, agent_id, call_id):
@@ -83,6 +86,7 @@ class NativeVoiceChannel:
             },
             allow_redirects=False,
         ) as response:
+            logger.info("Grok native presence on=%s status=%d", on, response.status)
             if response.status != 200:
                 raise RuntimeError("native_presence_unavailable")
             result = await response.json()

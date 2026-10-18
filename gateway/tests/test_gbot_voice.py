@@ -130,12 +130,16 @@ async def test_interrupt_clears_proxy_pcm_queue_and_sends_stop():
 
 
 @pytest.mark.asyncio
-async def test_startup_error_redacts_upstream_secrets():
+async def test_startup_error_redacts_upstream_secrets(caplog):
     b = bridge()
     b._local = AsyncMock(side_effect=RuntimeError("SECRET_FIXTURE"))
     with pytest.raises(RuntimeError, match="details redacted") as caught:
         await b.start()
     assert "SECRET_FIXTURE" not in str(caught.value)
+    assert "SECRET_FIXTURE" not in caplog.text
+    assert "stage=account_requests error_type=RuntimeError" in caplog.text
+    assert b.metrics["startup_stage"] == "account_requests"
+    assert b.metrics["startup_error_type"] == "RuntimeError"
     assert b._http.closed
 
 
