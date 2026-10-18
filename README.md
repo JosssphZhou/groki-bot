@@ -58,6 +58,8 @@ What path 2 does and does not do with this firmware: the gateway handles voice c
 
 Grok login voice uses the native desktop channel described below; it does not need the `gbot` CLI. If you keep Gemini voice, the existing optional `ask_grokbot` and CLI forwarding service remain available. See the [Gemini hand-off setup](gateway/README.md#optional-grok-bot-hand-off).
 
+For an agent named `assistant`, set `STACKCHAN_TOOL_BOT=assistant` in the gateway's `.env` and follow the gateway setup for the remaining settings.
+
 ### Grok Bot login voice
 
 The gateway also supports `STACKCHAN_VOICE_BACKEND=gbot`: use the signed-in Grok Bot app on macOS for voice interaction without a separate xAI voice API key. Gemini remains the default and can be selected again with `STACKCHAN_VOICE_BACKEND=gemini`. Switching gateway backends does not require reflashing firmware.

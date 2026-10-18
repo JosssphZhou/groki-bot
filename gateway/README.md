@@ -97,7 +97,7 @@ After installing the gateway, configure the following in `gateway/.env` with you
 ```dotenv
 STACKCHAN_VOICE_BACKEND=gbot
 STACKCHAN_GBOT_VOICE_BOT_ID=YOUR_AGENT_ID
-STACKCHAN_TOOL_BOT=YOUR_AGENT_NAME
+STACKCHAN_TOOL_BOT=assistant
 STACKCHAN_TOOL_BOT_ID=YOUR_AGENT_ID
 ```
 
@@ -105,7 +105,7 @@ In a separate terminal, start the login helper from `gateway/` and keep it runni
 
 ```sh
 STACKCHAN_GBOT_VOICE_BOT_ID=YOUR_AGENT_ID \
-STACKCHAN_TOOL_BOT=YOUR_AGENT_NAME \
+STACKCHAN_TOOL_BOT=assistant \
 STACKCHAN_TOOL_BOT_ID=YOUR_AGENT_ID \
 node scripts/gbot_voice_session_bridge.mjs
 ```

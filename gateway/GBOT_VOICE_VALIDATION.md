@@ -72,7 +72,7 @@ Search is not available through this adapter; queries may instead be delegated
 to the configured desktop Bot, without claiming that a search already ran.
 
 For native desktop handoff, configure **both** the gateway and helper with
-`STACKCHAN_TOOL_BOT=YOUR_BOT_NAME` and `STACKCHAN_TOOL_BOT_ID=YOUR_AGENT_ID`, with
+`STACKCHAN_TOOL_BOT=assistant` and `STACKCHAN_TOOL_BOT_ID=YOUR_AGENT_ID`, with
 `STACKCHAN_GBOT_VOICE_BOT_ID` pointing to that same agent. This enables native `send_task` and `search_conversations` plus call-scoped
 presence and filtered event streams. Grok does not declare or execute the local
 `ask_grokbot` wrapper and does not use a CLI or the older HTTP Bot bridge.
