@@ -15,7 +15,7 @@ Groki Bot 桌面机器人（M5Stack CoreS3 加 Stack-chan 底座）的全部内�
 | [tools/vision-tracker/](../tools/vision-tracker/README.md) | Mac 端人脸追踪程序（Swift，Apple Vision），人脸追踪时由网关启动 |
 | `tools/` | 设置页、Avatar DSL 编译器、[tools/stackchan-channel/](../tools/stackchan-channel/README.md)（通过固件 HTTP 接口给 Claude Code 用的 MCP 服务）、[tools/face-demo/](../tools/face-demo/README.md)（表情演示脚本）等电脑端工具 |
 
-眼睛采用 [aora-bot](https://github.com/sam70361/aora-bot) Emotion Ball 的眼环轮廓体系（15 个本机表情，含眨眼、环游、四权重混合），身体保留呼吸、开心弹跳、说话压扁、害羞飘心与腮红等 DSL 动画。眼环数据按 Emotion Ball 社区许可使用，**仅限非商业用途**，见[授权](#授权)。
+眼睛采用 [aora-bot](https://github.com/sam70361/aora-bot) Emotion Ball 的眼环轮廓体系（15 个本机表情，含眨眼、环游、四权重混合），身体保留呼吸、开心弹跳、说话压扁、害羞飘心与腮红等 DSL 动画。眼环数据按 Emotion Ball 社区许可使用，见[授权](#授权)。
 
 ## 授权
 
@@ -25,10 +25,6 @@ Groki Bot 桌面机器人（M5Stack CoreS3 加 Stack-chan 底座）的全部内�
 
 Submodule（`components/M5GFX` / `components/M5Unified` / `components/tl_expected/expected`）与 managed_components（`espressif/esp_audio_codec` / `espressif/esp_websocket_client` / `espressif/mdns` / `espressif/esp_jpeg` / `espressif/esp32-camera` 等）遵循各自上游许可证。
 
-**眼环数据（非商业）**：`main/aora_ring_data.hpp` 由 `tools/aora_rings/convert.mjs` 从 [aora-bot](https://github.com/sam70361/aora-bot) 的 `emotion-ball/` 转换生成（Copyright (c) 2026 sam70361）。它和 `main/aora_face.hpp` 里的动画参数按 Emotion Ball 社区许可使用，只允许非商业用途。许可全文、版权声明和上游 NOTICE.md 放在 [third_party/emotion-ball/](../third_party/emotion-ball)。本项目没有使用球形角色的视觉形象。如需商用本固件，要向上游作者取得商业授权，或替换这份数据。
+**眼环数据**：`main/aora_ring_data.hpp` 由 `tools/aora_rings/convert.mjs` 从 [aora-bot](https://github.com/sam70361/aora-bot) 的 `emotion-ball/` 转换生成（Copyright (c) 2026 sam70361）。它和 `main/aora_face.hpp` 里的动画参数按 Emotion Ball 社区许可使用。许可全文、版权声明和上游 NOTICE.md 放在 [third_party/emotion-ball/](../third_party/emotion-ball)。本项目没有使用球形角色的视觉形象。
 
 HMM 语音合成使用的 **hts_engine API**（Modified BSD / 名古屋工业大学·东京工业大学）与同捆 **HMM 语音 "Mei"**（CC BY 3.0 / 名古屋工业大学·MMDAgent Project Team）等第三方归属，同样汇总在 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。HTML 版：<https://josssphzhou.github.io/groki-bot/licenses.html>。
-
-## 致谢
-
-Groki Bot 起步于 Kenta IDA 的 [stackchan-idf](https://github.com/ciniml/stackchan-idf)（BSL-1.0），网关起步于 kisaragi-mochi 的 [stackchan-mcp](https://github.com/kisaragi-mochi/stackchan-mcp)（MIT），感谢他们和 Stack-chan 社区。

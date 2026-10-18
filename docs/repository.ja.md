@@ -9,8 +9,8 @@ BLE / Wi-Fi / SoftAP の 3 経路設定、デバイス側 OTA をサポートし
 Groki は Grok bot バックエンドによるネイティブ音声に対応し、デスクトップアプリと連携してロボットと直接会話できるようになりました。Grok Bot にログイン済みの Mac であれば既存のログイン状態で音声を利用でき、追加の xAI 音声 API キー設定やファームウェアの再書き込みは不要です。
 
 > 目の表現には [aora-bot](https://github.com/sam70361/aora-bot) Emotion Ball の
-> アイリング輪郭を使っています。このデータは Emotion Ball Community License に基づく
-> **非商用利用のみ** の許諾です（全文は [third_party/emotion-ball/](../third_party/emotion-ball)）。
+> アイリング輪郭を使っています。このデータは Emotion Ball Community License に基づいて使用しています
+> （全文は [third_party/emotion-ball/](../third_party/emotion-ball)）。
 > PC 側のゲートウェイ（Gemini / Grok ログイン音声、ウェイクワード、MCP、ネイティブ Grok Bot 連携）は [gateway/](../gateway/README.md)、
 > 全体の構成と通信は [docs/architecture.md](architecture.md)（英語）を参照してください。
 > ウェイクワードは既定で「Hi Grok」、`gateway/.env` に `STACKCHAN_WAKE_PHRASE=hey groki` を設定すると「Hey Groki」になります。
@@ -80,7 +80,3 @@ Project Team) をはじめとする第三者コンポーネントの帰属表示
 **[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)** にまとめています。
 HTML 版 (Web フラッシャー・設定ページからも参照可):
 <https://josssphzhou.github.io/groki-bot/licenses.html>。
-
-## 謝辞
-
-Groki Bot は Kenta IDA さんの [stackchan-idf](https://github.com/ciniml/stackchan-idf) (BSL-1.0) から始まりました。Kenta IDA さんと Stack-chan コミュニティに感謝します。

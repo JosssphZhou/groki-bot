@@ -41,12 +41,8 @@ For an agent named `assistant`, set `STACKCHAN_TOOL_BOT=assistant` in the gatewa
 - [Repository Structure](docs/repository.md)
 - [Gateway](gateway/README.md)
 
-Eye-ring outline data is for non-commercial use only (from aora-bot Emotion Ball under the Community License), while all other source code is licensed under the Boost Software License 1.0: see the [Licenses Page](docs/licenses.html) for details.
-
 ## License
 
 [BSL-1.0](LICENSE) | [Gateway (MIT)](gateway/LICENSE) | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | [docs/licenses.html](docs/licenses.html) | [repository](docs/repository.md)
 
-## Acknowledgements
-
-Groki Bot started from Kenta IDA's [stackchan-idf](https://github.com/ciniml/stackchan-idf) (BSL-1.0), and the gateway from kisaragi-mochi's [stackchan-mcp](https://github.com/kisaragi-mochi/stackchan-mcp) (MIT). Thanks to them and to the Stack-chan community.
+Third-party licenses and attributions are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

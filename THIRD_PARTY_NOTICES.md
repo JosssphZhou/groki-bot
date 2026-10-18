@@ -15,6 +15,10 @@ This file lists the third-party software and data that are included in this repo
 - Only the eye-ring contours and animation parameters are used. The ball character's visual design (body silhouettes, color schemes, ribbons and other effects) is not used.
 - Because the released firmware contains this data, the firmware may be used and shared for non-commercial purposes only. Commercial use needs a commercial license from the author or replacement of this data.
 
+## Firmware upstream
+
+- Based on [ciniml/stackchan-idf](https://github.com/ciniml/stackchan-idf), Copyright (c) 2026 Kenta IDA, under the Boost Software License 1.0. The copyright notice and full license text are kept in [LICENSE](LICENSE).
+
 ## Compiled into the firmware
 
 | Component | Location | License | Copyright |

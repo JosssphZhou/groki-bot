@@ -39,12 +39,8 @@ Groki Bot 是一台开源桌面机器人（M5Stack CoreS3 加 Stack-chan 底座�
 - [仓库结构](docs/repository.zh-CN.md)
 - [网关](gateway/README.zh-CN.md)
 
-眼睛轮廓数据仅限非商业用途（源自 aora-bot Emotion Ball，遵循社区许可协议），其余源码采用 Boost Software License 1.0 协议分发，详细条款请参阅[许可说明](docs/licenses.html)。
-
 ## 授权
 
 [BSL-1.0](LICENSE) | [Gateway (MIT)](gateway/LICENSE) | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | [docs/licenses.html](docs/licenses.html) | [repository](docs/repository.zh-CN.md)
 
-## 致谢
-
-Groki Bot 起步于 Kenta IDA 的 [stackchan-idf](https://github.com/ciniml/stackchan-idf)（BSL-1.0），网关起步于 kisaragi-mochi 的 [stackchan-mcp](https://github.com/kisaragi-mochi/stackchan-mcp)（MIT），感谢他们和 Stack-chan 社区。
+第三方许可和署名见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
