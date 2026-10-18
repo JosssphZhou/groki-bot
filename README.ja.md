@@ -9,7 +9,7 @@
 
 Groki Bot は、Grok Bot アプリにつないで直接会話できるオープンソースのデスクトップロボット（M5Stack CoreS3 + Stack-chan ベース）です。ファームウェア、PC 側ゲートウェイ、Grok Bot 連携が 1 つのリポジトリに入っています。
 
-> 目の表現には [aora-bot](https://github.com/sam70361/aora-bot) Emotion Ball の
+> 目の表現には [aora-bot](https://github.com/sam70361/aora-bot) Emotion Ball のアイリング輪郭を使っています。
 
 ## 機能
 
@@ -41,12 +41,8 @@ Groki Bot は、Grok Bot アプリにつないで直接会話できるオープ�
 - [リポジトリ構成](docs/repository.ja.md)
 - [ゲートウェイ](gateway/README.md)
 
-アイリング輪郭データは非商用利用に限定され（aora-bot Emotion Ball のコミュニティライセンスに準拠）、その他のソースコードは Boost Software License 1.0 のもとで配布されています：詳細は[ライセンスページ](docs/licenses.html)を参照してください。
-
 ## ライセンス
 
 [BSL-1.0](LICENSE) | [Gateway (MIT)](gateway/LICENSE) | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | [docs/licenses.html](docs/licenses.html) | [repository](docs/repository.ja.md)
 
-## 謝辞
-
-Groki Bot は Kenta IDA さんの [stackchan-idf](https://github.com/ciniml/stackchan-idf) (BSL-1.0) から始まりました。Kenta IDA さんと Stack-chan コミュニティに感謝します。
+第三者のライセンスと帰属表示は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) を参照してください。
