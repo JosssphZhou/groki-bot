@@ -109,3 +109,20 @@ test('server transcript stream drops replay and pre-connection entries and requi
   await assert.rejects(async()=>{for await(const ignored of client.events({...context,sessionId:'unverified'})) {}},/session_binding/);
   assert.equal(fetched,false);
 });
+
+test('separate native results with identical text are both delivered without event IDs', async () => {
+  const {filterNativeEvent} = await import('./gbot_voice_session_bridge.mjs');
+  const context = {agentId:'a',callId:'call-c',seen:new Set()};
+  const event = {channel:'voice-call-nudge',payload:{agentId:'a',callId:'call-c',kind:'outcome',update:'SAME FIXTURE RESULT'}};
+  assert.equal(filterNativeEvent(event,context)?.channel,'voice-call-nudge');
+  assert.equal(filterNativeEvent(event,context)?.channel,'voice-call-nudge');
+});
+
+test('native event IDs deduplicate replays without conflating separate same-text results', async () => {
+  const {filterNativeEvent} = await import('./gbot_voice_session_bridge.mjs');
+  const context = {agentId:'a',callId:'call-c',seen:new Set()};
+  const event = {eventId:'event-1',channel:'voice-call-nudge',payload:{agentId:'a',callId:'call-c',kind:'outcome',update:'SAME FIXTURE RESULT'}};
+  assert.ok(filterNativeEvent(event,context));
+  assert.equal(filterNativeEvent(event,context),null);
+  assert.ok(filterNativeEvent({...event,eventId:'event-2'},context));
+});

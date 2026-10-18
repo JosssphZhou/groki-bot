@@ -222,9 +222,15 @@ export function filterNativeEvent(event, context) {
   if (event.channel === 'voice-call-nudge') {
     if (p.agentId !== context.agentId || p.callId !== context.callId || !['outcome', 'overheard'].includes(p.kind) || typeof p.update !== 'string' || !p.update.trim()) return null;
     if (p.kind === 'overheard' && !context.acceptsOverheard) return null;
-    const key = 'nudge:' + p.kind + ':' + p.update;
-    if (context.seen.has(key)) return null;
-    context.seen.add(key);
+    // Equal text is not an event identity: separate tasks can return exactly
+    // the same result. Only an explicit upstream event ID can identify replay.
+    const eventId = typeof event.eventId === 'string' && event.eventId.length > 0 && event.eventId.length <= 256
+      ? event.eventId : undefined;
+    if (eventId !== undefined) {
+      const key = 'nudge-id:' + eventId;
+      if (context.seen.has(key)) return null;
+      context.seen.add(key);
+    }
     return {channel: 'voice-call-nudge', payload: {agentId: p.agentId, callId: p.callId, kind: p.kind, update: p.update.slice(0, 16000)}};
   }
   if (event.channel !== 'transcript' || p.type !== 'appended') return null;
@@ -308,7 +314,11 @@ export function createBridge({ port = 18771, rpc = accountRpc, agentId = process
             const data = block.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trim()).join('\n');
             if (!data) continue;
             let event;
-            try { event = filterNativeEvent(JSON.parse(data), context); } catch { continue; }
+            try {
+              const parsed = JSON.parse(data);
+              const id = block.split('\n').find(line => line.startsWith('id:'))?.slice(3).trim();
+              event = filterNativeEvent(id ? {...parsed, eventId: id} : parsed, context);
+            } catch { continue; }
             if (event?.channel === 'typed-message') event = null;
             if (event && !res.write('data: ' + JSON.stringify(event) + '\n\n')) throw new Error('slow_consumer');
             if (context.seen.size > 2000) context.seen.delete(context.seen.values().next().value);
