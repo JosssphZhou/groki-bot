@@ -24,6 +24,7 @@ from .debug_status import get_debug_status
 from .esp32_client import ESP32Manager
 from .face_tracker import FaceTrackerSupervisor
 from .gemini_voice_proxy import GeminiVoiceProxy
+from .gbot_voice_proxy import GbotVoiceProxy
 from .idle_behavior import IdleBehavior
 from .idle_gate import IdleGate
 from .mac_control import resolve_claude_bin
@@ -254,8 +255,9 @@ class Gateway:
         need a forward reference at __init__ time.
         """
         backend = self.voice_backend
-        if backend == "gemini":
-            return GeminiVoiceProxy(
+        if backend in {"gemini", "gbot"}:
+            proxy_class = GbotVoiceProxy if backend == "gbot" else GeminiVoiceProxy
+            return proxy_class(
                 esp32_ref=lambda: self.esp32,
                 voice_bridge=self.voice_input_bridge,
                 usb_transport=self.usb_transport,

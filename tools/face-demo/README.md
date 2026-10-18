@@ -7,7 +7,7 @@ SPDX-License-Identifier: BSL-1.0
 
 English · [中文](#中文说明)
 
-Two small zsh scripts that drive the robot's face over the firmware's own HTTP API (`/mcp/expression`, `/mcp/balloon`, `/mcp/state`). They do not need the gateway or Grok Bot. The Grok Bot hand-off (the forwarding service that used to live here as `gbot_http_proxy.py`) is now part of the gateway: see [gateway/README.md](../../gateway/README.md#optional-grok-bot-hand-off) and [docs/architecture.md](../../docs/architecture.md).
+Two small zsh scripts that drive the robot's face over the firmware's own HTTP API (`/mcp/expression`, `/mcp/balloon`, `/mcp/state`). They do not need the gateway or Grok Bot. The optional Gemini-to-Grok Bot hand-off (the forwarding service that used to live here as `gbot_http_proxy.py`) is now part of the gateway: see [gateway/README.md](../../gateway/README.md#optional-grok-bot-hand-off) and [docs/architecture.md](../../docs/architecture.md).
 
 Both scripts need the robot on the same network and an MCP token set in the BLE settings page (tab "维护", Maintenance, section "Claude Code Channel (MCP)").
 
@@ -59,7 +59,7 @@ The `demo` sequence: sleepy 3 s, surprised 1 s, happy 2 s, listening 2 s, thinki
 
 ## 中文说明
 
-两个 zsh 脚本，通过固件自带的 HTTP 接口（`/mcp/expression`、`/mcp/balloon`、`/mcp/state`）控制机器人的脸，不需要网关，也不需要 Grok Bot。原来放在这里的 Grok Bot 转发服务（`gbot_http_proxy.py`）已经并入网关，见 [gateway/README.zh-CN.md](../../gateway/README.zh-CN.md#可选把任务交给-grok-bot) 和[架构与通信说明](../../docs/architecture.zh-CN.md)。
+两个 zsh 脚本，通过固件自带的 HTTP 接口（`/mcp/expression`、`/mcp/balloon`、`/mcp/state`）控制机器人的脸，不需要网关，也不需要 Grok Bot。Gemini 路径中原来放在这里的 Grok Bot 转发服务（`gbot_http_proxy.py`）已经并入网关，见 [gateway/README.zh-CN.md](../../gateway/README.zh-CN.md#可选把任务交给-grok-bot) 和[架构与通信说明](../../docs/architecture.zh-CN.md)。
 
 两个脚本都要求机器人在同一网络，并在蓝牙设置页「维护」标签的「Claude Code Channel (MCP)」里设好 MCP 令牌。
 

@@ -16,19 +16,16 @@ Each path adds to the one before it. Start with path 1.
 | | What you get | What you need |
 |---|---|---|
 | **1. Firmware only** (start here) | Voice conversation with the robot through OpenAI Realtime or Google Gemini Live, using your own API key | The robot, a USB-C cable, desktop Chrome or Edge, an OpenAI or Gemini API key |
-| **2. + gateway** | A "Hi Grok" wake word and Gemini Live voice running through your computer; on a Mac with a camera, the head follows your face; Claude or another MCP client can make the robot speak and read its status | Path 1, plus a computer on the same Wi-Fi running [gateway/](gateway/README.md) with a Gemini API key |
-| **3. + Grok Bot** | Say "look this up" or "research X": the robot hands the task to your agent in the Grok Bot app and reads the agent's replies aloud as they arrive | Path 2, plus the Grok Bot app signed in on that computer and the `gbot` CLI |
+| **2. + gateway** | Computer-side voice and "Hi Grok" wake word, with Gemini Live or Grok login voice; optional Mac face tracking and MCP | Existing firmware, a computer on the same Wi-Fi, and the chosen backend configuration; see [gateway/](gateway/README.md) |
+| **3. + Grok Bot** | Hand tasks to a desktop agent and receive completion updates | Grok Bot signed in on that computer; native transport for Grok voice, optional CLI forwarding for Gemini |
 
 How the pieces talk to each other (ports, protocol, message flow, what each part needs): [docs/architecture.md](docs/architecture.md).
 
-```
- Robot ──(path 1) wss──▶ OpenAI Realtime / Gemini Live
-   │
-   └──(path 2) ws://<LAN IP>:8765──▶ Gateway ──▶ Gemini Live
-                                       │  ▲
-                        Claude ──MCP───┘  │ (path 3) HTTP 127.0.0.1:18770
-                                          ▼
-                              forwarding service ──gbot CLI──▶ Grok Bot app
+```text
+Robot → Gateway → Gemini Live (default) / Grok login voice
+Claude / MCP → Gateway
+Grok voice → localhost:18771 login helper → native Grok Bot
+Gemini ask_grokbot → optional localhost:18770 → gbot CLI → Grok Bot
 ```
 
 ### Path 1: firmware only
@@ -47,7 +44,7 @@ The default provider is OpenAI. **Without an API key the robot connects to Wi-Fi
 Use this if you want the robot's voice to run through your computer, for example to use Gemini Live with a wake word, or to connect Claude to the robot.
 
 1. Do steps 1 and 2 of path 1 (you can skip the API key).
-2. Install and start the gateway on a computer on the same Wi-Fi, following [gateway/README.md](gateway/README.md): `git clone` this repository, `cd groki-bot/gateway`, `uv sync --all-extras`, put your Gemini API key in `.env`, then start it with Claude Code (`claude mcp add groki -- uv run --directory "$(pwd)" stackchan-mcp`) or as a background service.
+2. Install and start the gateway on a computer on the same Wi-Fi, following [gateway/README.md](gateway/README.md): `git clone` this repository, `cd groki-bot/gateway`, `uv sync --all-extras`, choose Gemini (with an API key) or Grok login voice in `.env` (see below), then start it with Claude Code (`claude mcp add groki -- uv run --all-extras --directory "$(pwd)" stackchan-mcp`) or as a background service.
 3. In the BLE settings page, tab "对话" (Conversation):
    - Provider: "XiaoZhi 服务器" (XiaoZhi server).
    - "XiaoZhi 服务器 URL" (XiaoZhi server URL): `ws://<your computer's LAN IP>:8765`, for example `ws://192.168.1.20:8765`.
@@ -55,19 +52,21 @@ Use this if you want the robot's voice to run through your computer, for example
    - Click "保存并重启" (Save and restart).
 4. Check <http://127.0.0.1:8766/debug/status> on the computer: `"device": {"connected": true}`. Say "Hi Grok". To use "Hey Groki" as the wake word instead, set `STACKCHAN_WAKE_PHRASE=hey groki` in `gateway/.env` and restart the gateway.
 
-What path 2 does and does not do with this firmware: the gateway handles voice conversation, and on a Mac with a camera it turns the robot's head to follow your face ([Face tracking](gateway/README.md#face-tracking)). Head, LED and camera control from Claude through the gateway's MCP tools does **not** reach this firmware, because its XiaoZhi client announces `features.mcp=false` in its hello message ([components/conversation/xiaozhi_client.cpp](components/conversation/xiaozhi_client.cpp)) and does not handle MCP requests from the server. Face tracking uses the XiaoZhi `head` message instead, which the firmware handles. Gemini's own head, face and LED tools (off by default; `STACKCHAN_GEMINI_DEVICE_TOOLS=1`) also reach the firmware this way: `move_head` as a `head` message (firmware newer than v0.2.1), faces as emotion messages and LED colours as `led` messages. Camera tools do not work with this firmware.
+What path 2 does and does not do with this firmware: the gateway handles voice conversation, and on a Mac with a camera it turns the robot's head to follow your face ([Face tracking](gateway/README.md#face-tracking)). Head, LED and camera control from Claude through the gateway's MCP tools does **not** reach this firmware, because its XiaoZhi client announces `features.mcp=false` in its hello message ([components/conversation/xiaozhi_client.cpp](components/conversation/xiaozhi_client.cpp)) and does not handle MCP requests from the server. Face tracking uses the XiaoZhi `head` message instead, which the firmware handles. The shared gateway voice head, face and LED tools (off by default; `STACKCHAN_GEMINI_DEVICE_TOOLS=1`) also reach the firmware this way: `move_head` as a `head` message (firmware newer than v0.2.1), faces as emotion messages and LED colours as `led` messages. Camera tools do not work with this firmware.
 
 ### Path 3: firmware + gateway + Grok Bot
 
-Use this if you already use the Grok Bot desktop app and want the robot to pass real work to one of your agents. Small talk stays with Gemini; tasks go to the agent, and the robot reads the agent's replies aloud as they come in.
+Grok login voice uses the native desktop channel described below; it does not need the `gbot` CLI. If you keep Gemini voice, the existing optional `ask_grokbot` and CLI forwarding service remain available. See the [Gemini hand-off setup](gateway/README.md#optional-grok-bot-hand-off).
 
-1. Get path 2 working.
-2. On the same computer: sign in to the Grok Bot app and install the `gbot` CLI (`npm install --global grok-bot-cli`; it needs a recent Node.js, see [grok-bot-cli](https://github.com/ScriptedAlchemy/grok-bot-cli)). Check with `gbot bots list`.
-3. In `gateway/.env`, set `STACKCHAN_TOOL_BOT` to the agent's name (for example `STACKCHAN_TOOL_BOT=assistant`). The feature stays off until this is set.
-4. Start the forwarding service next to the gateway: `cd gateway && uv run stackchan-gbot-proxy` (listens on `127.0.0.1:18770` only). Restart the gateway.
-5. Say "Hi Grok, look up tomorrow's weather". The robot says the task has been sent to assistant, then reads the agent's replies.
+For an agent named `assistant`, set `STACKCHAN_TOOL_BOT=assistant` in the gateway's `.env` and follow the gateway setup for the remaining settings.
 
-Details and troubleshooting: [gateway README, Grok Bot hand-off](gateway/README.md#optional-grok-bot-hand-off) and [docs/architecture.md, section 4](docs/architecture.md#4-grok-bot-hand-off).
+### Grok Bot login voice
+
+The gateway also supports `STACKCHAN_VOICE_BACKEND=gbot`: use the signed-in Grok Bot app on macOS for voice interaction without a separate xAI voice API key. Gemini remains the default and can be selected again with `STACKCHAN_VOICE_BACKEND=gemini`. Switching gateway backends does not require reflashing firmware.
+
+Grok voice directly uses native `send_task`, `search_conversations`, and `end_the_call`, alongside shared local hardware and optional Mac tools. It does not require the `gbot` CLI; the CLI forwarding service remains an optional path for Gemini. See [gateway setup](gateway/README.md#grok-bot-login-voice-macos).
+
+Real task acceptance, delivery of completion results to the voice model, and model-generated output audio have been observed in testing. The exact words heard on the physical speaker have not been confirmed for that test. Desktop typed-message subscriptions can still fail; they reconnect separately and do not replay messages missed during a disconnect. CoreS3 firmware may stop microphone capture while speaking, so pure acoustic interruption is not established. See [validation limits](gateway/GBOT_VOICE_VALIDATION.md).
 
 ### Letting Claude Code change the face directly
 

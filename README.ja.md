@@ -9,9 +9,17 @@ BLE / Wi-Fi / SoftAP の 3 経路設定、デバイス側 OTA をサポートし
 > 目の表現には [aora-bot](https://github.com/sam70361/aora-bot) Emotion Ball の
 > アイリング輪郭を使っています。このデータは Emotion Ball Community License に基づく
 > **非商用利用のみ** の許諾です（全文は [third_party/emotion-ball/](third_party/emotion-ball/)）。
-> PC 側のゲートウェイ（Gemini Live 音声、ウェイクワード、MCP、Grok Bot 転送サービス）は [gateway/](gateway/README.md)、
+> PC 側のゲートウェイ（Gemini / Grok ログイン音声、ウェイクワード、MCP、ネイティブ Grok Bot 連携）は [gateway/](gateway/README.md)、
 > 全体の構成と通信は [docs/architecture.md](docs/architecture.md)（英語）を参照してください。
 > ウェイクワードは既定で「Hi Grok」、`gateway/.env` に `STACKCHAN_WAKE_PHRASE=hey groki` を設定すると「Hey Groki」になります。
+
+### Grok Bot のログイン状態で音声対話
+
+macOS でログイン済みの Grok Bot アプリがあれば、ゲートウェイの `STACKCHAN_VOICE_BACKEND=gbot` を指定して音声対話を利用できます。別途 xAI 音声 API キーを設定する必要はありません。デフォルトは Gemini のままで、`STACKCHAN_VOICE_BACKEND=gemini` に戻せます。ゲートウェイの切り替えにファームウェアの再書き込みは不要です。
+
+Grok 側はネイティブの `send_task`、`search_conversations`、`end_the_call` と共通のローカル機器ツールを直接使用します。`gbot` CLI は不要で、CLI 転送サービスは Gemini 側のオプション連携機能として残されています。[セットアップ手順](gateway/README.md#grok-bot-login-voice-macos)（英語）を参照してください。
+
+実機検証において、タスクの受付、完了結果の音声モデルへの伝達、およびモデルによる出力音声の生成は確認済みですが、その結果が実機スピーカーから具体的にどう発話されたかは未確認です。デスクトップのテキストメッセージ購読は一時的にエラーとなる場合があり、その際は個別に再接続されます（切断中に届かなかったメッセージの再送は行われません）。CoreS3 ファームウェアは発話中にマイク入力を停止する場合があるため、声だけの割り込みが動作するとは保証できません。詳細は[検証範囲](gateway/GBOT_VOICE_VALIDATION.md)を参照してください。
 
 ## Web Flasher / 設定ページ
 

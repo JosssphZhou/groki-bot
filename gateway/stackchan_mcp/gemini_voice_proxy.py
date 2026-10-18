@@ -95,6 +95,9 @@ class GeminiVoiceProxy:
     voice_bridge: Any | None = None
     usb_transport: Any | None = None
     bridge_factory: Callable[..., GeminiLiveBridge] | None = None
+    voice_tool_executor: Any = None
+    voice_tool_executor_factory: Any = None
+    voice_tool_extensions: tuple = ()
     codec_factory: Callable[[], StackchanOpusCodec] | None = None
     edge_tts_provider_factory: Callable[..., EdgeTTSProvider] | None = None
     wake_gate_factory: Callable[[], WakeGate | None] | None = None
@@ -119,6 +122,7 @@ class GeminiVoiceProxy:
     _device_hello: dict[str, Any] | None = None
     _send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _tts_active: bool = False
+    _tts_generation: int = 0
     _speak_text_active: bool = False
     _speak_text_frames: int = 0
     _tts_tasks: set[asyncio.Task[None]] = field(default_factory=set)
@@ -236,6 +240,39 @@ class GeminiVoiceProxy:
         bridge = self._bridge
         return bridge is not None and bridge.running
 
+    def _voice_api_key(self) -> str | None:
+        return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
+    def _voice_requires_key(self) -> bool:
+        return True
+
+    def _voice_requires_device(self) -> bool:
+        return True
+
+    def _voice_hello(self) -> dict[str, Any]:
+        return dict(GEMINI_HELLO_MARKER)
+
+    def _voice_tts_mode(self) -> str:
+        return os.getenv("STACKCHAN_GEMINI_TTS", "native").strip().lower()
+
+    def _make_bridge(self, esp32: Any, **kwargs: Any) -> Any:
+        return (self.bridge_factory or GeminiLiveBridge)(esp32, **kwargs)
+
+    def _speak_waits_for_first_audio(self) -> bool:
+        return False
+
+    async def _send_text_prompt(self, prompt: str) -> None:
+        bridge = self._bridge
+        injector = getattr(bridge, "inject_user_text", None)
+        if injector is not None:
+            if await injector(prompt) is False:
+                raise RuntimeError("voice text channel unavailable")
+            return
+        session = getattr(bridge, "_session", None)
+        if session is None:
+            raise RuntimeError("voice text channel unavailable")
+        await session.send_realtime_input(text=prompt)
+
     async def start(
         self,
         info: CloudConnectionInfo,
@@ -253,8 +290,8 @@ class GeminiVoiceProxy:
         self._device_hello = device_hello
         self._stopped = False
 
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if not api_key:
+        api_key = self._voice_api_key()
+        if self._voice_requires_key() and not api_key:
             logger.warning(
                 "Gemini voice backend disabled: GEMINI_API_KEY / GOOGLE_API_KEY not set; "
                 "set STACKCHAN_VOICE_BACKEND=xiaozhi to use the xiaozhi cloud instead",
@@ -263,7 +300,7 @@ class GeminiVoiceProxy:
             return False
 
         esp32 = self.esp32_ref() if self.esp32_ref is not None else None
-        if esp32 is None:
+        if esp32 is None and self._voice_requires_device():
             logger.error(
                 "Gemini voice backend: no esp32 reference; refusing to start (function "
                 "calling has nothing to dispatch to)",
@@ -281,7 +318,6 @@ class GeminiVoiceProxy:
             frame_interval_s=self.device_frame_interval_s,
             on_device_state=self.on_device_state,
         )
-        bridge_factory = self.bridge_factory or GeminiLiveBridge
         # AUDIO path: Gemini emits native 24 kHz PCM, we Opus-encode straight
         # to the device. Bypasses edge-tts entirely (saves ~2-3 s of first-
         # phrase latency). We still ask the bridge for "TEXT" — internally
@@ -298,7 +334,7 @@ class GeminiVoiceProxy:
         # Trades ~2-3 s of first-phrase latency for ~1000x less downstream
         # traffic on the Gemini socket — the native 24 kHz PCM stream needs
         # ~500 kbps, which a congested cross-border evening link cannot carry.
-        tts_mode = os.getenv("STACKCHAN_GEMINI_TTS", "native").strip().lower()
+        tts_mode = self._voice_tts_mode()
         on_text = (
             self._handle_gemini_text
             if tts_mode == "edge"
@@ -318,13 +354,14 @@ class GeminiVoiceProxy:
             available=bool(gate is not None and gate.available),
             state=gate.state.value if gate is not None else "DORMANT",
         )
-        self._bridge = bridge_factory(
+        self._bridge = self._make_bridge(
             esp32,
             api_key=api_key,
             response_modality="TEXT",
             on_audio=self._handle_gemini_audio,
             on_text=on_text,
             on_turn_complete=self.end_tts,
+            on_interrupt=self._abort_in_flight_tts,
             on_end_conversation=self._handle_bridge_end_conversation,
             on_session_dead=self._handle_session_dead,
             usb_transport=self.usb_transport,
@@ -349,7 +386,7 @@ class GeminiVoiceProxy:
         # Synthesize a hello-like surface so callers that inspect server_hello
         # can branch on provider. The xiaozhi backend gets this for free from
         # the cloud, we have to forge one here.
-        self.server_hello = dict(GEMINI_HELLO_MARKER)
+        self.server_hello = self._voice_hello()
         self._ready_event.set()
         self._start_keepalive()
         logger.info("Gemini voice backend ready (device=%s)", info.device_id or "?")
@@ -414,6 +451,7 @@ class GeminiVoiceProxy:
 
     async def stop(self) -> None:
         self._stopped = True
+        self._tts_generation += 1
         if self._keepalive is not None:
             await self._keepalive.stop()
             self._keepalive = None
@@ -458,7 +496,11 @@ class GeminiVoiceProxy:
             return False
         msg_type = message.get("type", "")
         if msg_type == "abort":
-            await self._abort_in_flight_tts()
+            interrupt = getattr(self._bridge, "interrupt", None)
+            if interrupt is not None:
+                await interrupt()
+            else:
+                await self._abort_in_flight_tts()
         elif msg_type == "listen":
             state = message.get("state", "")
             if state == "stop":
@@ -662,7 +704,7 @@ class GeminiVoiceProxy:
                 "text": text,
                 "emotion": emotion,
                 "frames_sent": 0,
-                "provider": "gemini_live",
+                "provider": self._voice_hello()["provider"],
                 "error": "gemini live is not connected",
             }
 
@@ -670,17 +712,6 @@ class GeminiVoiceProxy:
         # marker xiaozhi uses so the avatar reacts before the speech lands.
         if emotion:
             await self._send_device_emotion_safe(face_to_device_emotion(emotion))
-
-        session = getattr(self._bridge, "_session", None)
-        if session is None:
-            return {
-                "ok": False,
-                "text": text,
-                "emotion": emotion,
-                "frames_sent": 0,
-                "provider": "gemini_live",
-                "error": "gemini live session is unavailable",
-            }
 
         # Gemini 3.1 Flash Live rejects send_client_content for live updates
         # (only allowed for seeding initial history). Use send_realtime_input
@@ -692,28 +723,30 @@ class GeminiVoiceProxy:
             "Do not add anything and do not call tools:\n"
             + text
         )
+        self._speak_text_active = True
+        self._speak_text_frames = 0
         try:
-            await session.send_realtime_input(text=prompt)
+            await self._send_text_prompt(prompt)
         except Exception as exc:
+            self._speak_text_active = False
             return {
                 "ok": False,
                 "text": text,
                 "emotion": emotion,
                 "frames_sent": 0,
-                "provider": "gemini_live",
+                "provider": self._voice_hello()["provider"],
                 "error": f"gemini send failed: {exc}",
             }
 
         # The receive loop in GeminiLiveBridge will drive our on_audio
         # callback which writes the Opus frames to the device. Wait for
         # the tts.stop to flip the flag.
-        self._speak_text_active = True
-        self._speak_text_frames = 0
         timeout = float(os.getenv("GEMINI_SPEAK_TIMEOUT_SECONDS", "30"))
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         try:
-            while self._tts_active or self._codec_has_data():
+            while (self._tts_active or self._codec_has_data() or
+                   (self._speak_waits_for_first_audio() and self._speak_text_frames == 0)):
                 if loop.time() > deadline:
                     break
                 await asyncio.sleep(0.05)
@@ -728,7 +761,7 @@ class GeminiVoiceProxy:
             "text": text,
             "emotion": emotion,
             "frames_sent": frames_sent,
-            "provider": "gemini_live",
+            "provider": self._voice_hello()["provider"],
             "error": None if frames_sent > 0 else "no audio frames delivered",
         }
 
@@ -829,7 +862,8 @@ class GeminiVoiceProxy:
         ``tts.stop`` itself is sent from :meth:`on_turn_complete` because
         Gemini's audio frames don't always land before turn_complete.
         """
-        if self._send_to_device is None or self._codec is None or not pcm_24khz:
+        if (self._stopped or self._send_to_device is None
+                or self._codec is None or not pcm_24khz):
             return
         now = asyncio.get_running_loop().time()
         if self._turn_rx_first is None:
@@ -945,14 +979,19 @@ class GeminiVoiceProxy:
 
     async def _queue_tts_frames(self, frames: list[bytes]) -> bool:
         """Start TTS if needed, honor the start-to-first-frame delay, then queue frames."""
-        if not frames:
+        if not frames or self._stopped:
             return False
+        generation = self._tts_generation
         async with self._send_lock:
+            if generation != self._tts_generation:
+                return False
             if not self._tts_active:
                 if not await self._begin_tts():
                     return False
                 if self.device_tts_start_delay_s > 0:
                     await asyncio.sleep(self.device_tts_start_delay_s)
+        if generation != self._tts_generation or self._stopped:
+            return False
         self._ensure_drain_task()
         for frame in frames:
             await self._frame_queue.put(frame)
@@ -1194,6 +1233,7 @@ class GeminiVoiceProxy:
         Public so the bridge / orchestrator can call it on turn_complete.
         Idempotent: a second call without intervening start is a no-op.
         """
+        generation = self._tts_generation
         # Short turns may finish before the prebuffer threshold trips. Encode
         # whatever PCM we held back and push it onto the queue so the drain
         # task can ship it at the steady cadence.
@@ -1238,9 +1278,13 @@ class GeminiVoiceProxy:
                 await self._frame_queue.join()
             except Exception as exc:
                 logger.warning("frame queue join failed: %s", exc)
+        if generation != self._tts_generation:
+            return
         await self._stop_drain_task(cancel=False)
 
         async with self._send_lock:
+            if generation != self._tts_generation:
+                return
             try:
                 await self._send_to_device(  # type: ignore[misc]
                     json.dumps({"type": "tts", "state": "stop"})
@@ -1264,6 +1308,7 @@ class GeminiVoiceProxy:
         notes this in ``audio_stream.send_tts_state``). Always pair the
         codec reset with a stop envelope so the device returns to idle.
         """
+        self._tts_generation += 1
         was_active = self._tts_active
         if self._codec is not None:
             self._codec.reset_encode_buffer()
