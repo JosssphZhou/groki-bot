@@ -33,7 +33,7 @@ Then run a gateway-only probe in a separate terminal:
 ```sh
 VOICE_EVIDENCE="$(mktemp -d)"
 STACKCHAN_GBOT_VOICE_BOT_ID="YOUR_AGENT_ID" STACKCHAN_GBOT_VOICE_LANGUAGE=en \
-  uv run --extra tts python scripts/probe_gbot_voice.py \
+  uv run --all-extras python scripts/probe_gbot_voice.py \
   --input-wav fixtures/count.wav --interrupt-wav fixtures/interrupt.wav \
   --output-dir "$VOICE_EVIDENCE/direct"
 ```
@@ -120,9 +120,11 @@ tests passed, with Ruff): local dispatch, normalized schemas,
 call-scoped native envelopes, typed-message deduplication, interruption,
 late-result rejection, and provider lifecycle hooks. The helper's native
 connection and transcript subscription were separately checked at handshake
-level. This does **not** establish real desktop task delivery, result narration,
-or feature parity on a deployed robot; those require an explicitly authorized
-end-to-end run of this newer integration. See
+level. A later user-originated deployed test established task acceptance, completion
+arrival, a sent native update, an `async_update` model response and its first
+output audio. The exact completion words heard from the physical speaker have
+not been confirmed. Typed desktop-message delivery and full feature parity
+remain unverified. See
 [latency methods and measurements](VOICE_LATENCY_BENCHMARK.md).
 
 ### Current capability evidence
@@ -132,8 +134,9 @@ end-to-end run of this newer integration. See
 | Login-state audio and interruption | Earlier real cloud audio; current queue and proxy regressions | Acoustic barge-in on the selected firmware |
 | Wake, idle, end, injected speech | Shared proxy lifecycle and offline callback tests | Current robot wake and touch experience |
 | Local tool catalog and dispatch | Shared executor, schema/alias checks, dispatch and concurrency tests | Each enabled physical or desktop action |
-| Native desktop task handoff | Native `send_task`; offline dispatch/dedup tests | Actual task acceptance and completion |
-| Desktop replies and typed messages | Filtered helper streams, native envelopes and loopback lifecycle tests; upstream handshake only | Actual account message delivery and narration |
+| Native desktop task handoff | Native `send_task`; deployed user requests returned `served` / `accepted`, then completion events | Visible desktop delivery and broader task coverage |
+| Desktop completion replies | Deployed completion → native update sent → `response.created` with `trigger=async_update` → first output audio; about 0.6 s from sent update to first audio in one observed sample | Exact words heard on the physical speaker and broader reliability |
+| Desktop typed messages | Filtered own-user subscription and offline tests; upstream subscription errors still occur and reconnect independently | Live typed-message delivery; missed messages are not replayed |
 | Private extensions | Injected executor factory; no private source in this repository | Host-specific extension tests and deployment |
 
 No recordings, credentials, account identifiers or private device configuration
@@ -210,3 +213,21 @@ task; local audio and hardware tools remain available. Restoring the native
 channel enables these tools automatically. Stopping voice cancels registration,
 retry and event listening, and attempts bounded presence cleanup. No CLI or
 alternate desktop transport is used as a fallback.
+
+
+### README update completion
+
+The root English, Chinese and Japanese READMEs and both gateway READMEs now
+describe login-state Grok voice, native desktop tools, the retained Gemini/CLI
+path, macOS prerequisites, explicit helper environment variables and the current
+validation limits. The face-demo README's legacy forwarding note is also marked
+as a Gemini path. This documentation update changes no runtime configuration,
+firmware or service process.
+
+
+The final documentation baseline passed 300 tests across the eight targeted
+Python voice test files and ten Node helper tests, with optional dependencies
+installed. These are targeted checks, not the entire gateway suite. README
+command entry points, local documentation links and wording checks were also
+checked; no gateway, desktop task or firmware action was started for the
+README update.

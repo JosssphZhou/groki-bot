@@ -8,25 +8,25 @@ A small Python service that runs on your computer and gives the
 the firmware and Grok Bot is described in
 [docs/architecture.md](../docs/architecture.md).
 
-- **Voice conversation** through Google Gemini Live, with the robot's
+- **Voice conversation** through Google Gemini Live by default, or Grok login voice, with the robot's
   microphone and speaker.
 - **"Hi Grok" wake word**, detected on your computer, so the gateway only
-  forwards microphone audio to Gemini after you call the robot.
+  forwards microphone audio to the selected voice backend after you call the robot.
 - **An MCP server** so Claude Code, Claude Desktop, or any other MCP client
   can make the robot speak and read its status.
 - **Face tracking** on a Mac with a camera: the robot turns its head to
   follow your face (see [Face tracking](#face-tracking)).
 - Optional: voice control of your Mac, an `ask_claude` voice tool that
   hands hard questions to the Claude CLI (offered only when the `claude` CLI
-  is installed), and an `ask_grokbot` voice tool that
+  is installed), and a Gemini-only `ask_grokbot` voice tool that
   hands tasks to an agent in the Grok Bot app and reads its answers aloud
   (see [Optional: Grok Bot hand-off](#optional-grok-bot-hand-off)).
 
-```
- Claude / MCP client ──stdio MCP──▶ ┌─────────────┐ ◀──WebSocket :8765 (XiaoZhi protocol)── Groki Bot
-                                    │   gateway   │
-             Gemini Live  ◀────────▶│ (this dir)  │──HTTP :18770──▶ gbot proxy ──gbot CLI──▶ Grok Bot app
-                                    └─────────────┘                 (optional)
+```text
+Robot ← XiaoZhi WebSocket :8765 → Gateway ← MCP → Claude / MCP client
+Gateway voice → Gemini Live (default) / Grok login voice
+Grok voice → localhost:18771 login helper → native Grok Bot
+Gemini ask_grokbot → optional localhost:18770 → gbot CLI → Grok Bot
 ```
 
 ## Do you need this?
@@ -46,7 +46,7 @@ firmware's XiaoZhi client announces `features.mcp=false`, so MCP tools that
 drive hardware (`move_head`, `set_led`, `set_avatar`, `take_photo` and similar)
 return an error with that firmware. They work with firmware that implements
 the XiaoZhi device MCP tools. Face tracking does not use MCP: it turns the
-head with the XiaoZhi `head` message, which the firmware handles. Gemini's own
+head with the XiaoZhi `head` message, which the firmware handles. The shared voice
 device tools (`STACKCHAN_GEMINI_DEVICE_TOOLS=1`) do not need MCP either: with
 this firmware `move_head` is sent as a `head` message (firmware newer than
 v0.2.1), `set_avatar` as an emotion and `set_all_leds` as an `led` message.
@@ -77,9 +77,9 @@ uv sync --all-extras
 cp .env.example .env
 ```
 
-Open `.env` and set at least:
+Open `.env`, choose a voice backend, and set a device token:
 
-- `GEMINI_API_KEY`: your Google AI Studio key.
+- Default Gemini: set `GEMINI_API_KEY`. Grok login voice uses the setup below instead and does not need this key.
 - `STACKCHAN_TOKEN`: a random secret, for example from `openssl rand -hex 16`.
   Recommended; leave it empty only on a network you trust.
 
@@ -87,6 +87,34 @@ Note: the PyPI package named `stackchan-mcp` is the upstream project
 ([kisaragi-mochi/stackchan-mcp](https://github.com/kisaragi-mochi/stackchan-mcp))
 and does not include the Gemini voice or wake word. Install from this
 repository as shown above.
+
+### Grok Bot login voice (macOS)
+
+Gemini is the default backend. To use Grok voice, install and sign in to the Grok Bot desktop app on the same Mac, and make sure Node.js is installed. This integration was tested with Grok Bot 0.71.2 and uses internal APIs, so application updates, account permissions, and usage limits may affect availability. No separate xAI voice API key or firmware reflashing is needed.
+
+After installing the gateway, configure the following in `gateway/.env` with your own agent name and ID:
+
+```dotenv
+STACKCHAN_VOICE_BACKEND=gbot
+STACKCHAN_GBOT_VOICE_BOT_ID=YOUR_AGENT_ID
+STACKCHAN_TOOL_BOT=YOUR_AGENT_NAME
+STACKCHAN_TOOL_BOT_ID=YOUR_AGENT_ID
+```
+
+In a separate terminal, start the login helper from `gateway/` and keep it running:
+
+```sh
+STACKCHAN_GBOT_VOICE_BOT_ID=YOUR_AGENT_ID \
+STACKCHAN_TOOL_BOT=YOUR_AGENT_NAME \
+STACKCHAN_TOOL_BOT_ID=YOUR_AGENT_ID \
+node scripts/gbot_voice_session_bridge.mjs
+```
+
+The Node helper does not load `.env` automatically; pass the same values as shown. It reads the existing macOS app login and Keychain, keeps credentials in memory, and binds only to `127.0.0.1:18771`. Next, start the Python gateway using one of the methods in step 3. `GEMINI_API_KEY` is not required for this backend. To switch back, set `STACKCHAN_VOICE_BACKEND=gemini` and restart the gateway with your existing Gemini key.
+
+With the explicit bot name and matching IDs, Grok directly uses native `send_task`, `search_conversations`, and `end_the_call`; it does not add a local `ask_grokbot` wrapper or use the CLI forwarding service. Shared local hardware and optional Mac tools retain their existing opt-in settings, including the legacy-named `STACKCHAN_GEMINI_DEVICE_TOOLS`. Conversation search is not web search. Unknown native tools are not enabled by the legacy `STACKCHAN_GBOT_VOICE_TOOLS` switch.
+
+If the desktop sandbox is unavailable, audio stays usable while the native channel retries in the background. Task dispatching and conversation search are refused until presence and the event stream are ready. Acceptance means the task was accepted, not that a desktop message was visibly delivered. Typed-message subscriptions can still fail; they reconnect independently and do not replay messages missed during a disconnect. No claims of full feature parity or acoustic barge-in are made. See [validation](GBOT_VOICE_VALIDATION.md) and [latency methods](VOICE_LATENCY_BENCHMARK.md).
 
 ### Wake word model (optional, about 33 MB)
 
@@ -99,11 +127,11 @@ cd ../..
 ```
 
 Without the model the gateway still works, but it sends everything the
-microphone hears to Gemini while the robot is connected. Check the model
+microphone hears to the selected voice backend while the robot is connected. Check the model
 offline (macOS, uses the `say` command):
 
 ```bash
-uv run python scripts/kws_offline_repro.py --generate-say
+uv run --all-extras python scripts/kws_offline_repro.py --generate-say
 # prints "hit: ..." or "miss: ..."
 ```
 
@@ -138,7 +166,7 @@ triggers too rarely or too often, adjust `STACKCHAN_KWS_THRESHOLD` and
 ## 3. Start it and check
 
 ```bash
-uv run stackchan-mcp --check     # config and port check, exits right away
+uv run --all-extras stackchan-mcp --check     # config and port check, exits right away
 ```
 
 Then start the gateway in one of two ways.
@@ -147,7 +175,7 @@ Then start the gateway in one of two ways.
 is open:
 
 ```bash
-claude mcp add groki -- uv run --directory "$(pwd)" stackchan-mcp
+claude mcp add groki -- uv run --all-extras --directory "$(pwd)" stackchan-mcp
 ```
 
 For Claude Desktop, add this to `claude_desktop_config.json` (use the
@@ -158,7 +186,7 @@ absolute path of your clone):
   "mcpServers": {
     "groki": {
       "command": "uv",
-      "args": ["run", "--directory", "/absolute/path/to/groki-bot/gateway", "stackchan-mcp"]
+      "args": ["run", "--all-extras", "--directory", "/absolute/path/to/groki-bot/gateway", "stackchan-mcp"]
     }
   }
 }
@@ -284,7 +312,7 @@ while the robot is speaking and applies it when the reply ends.
 
 ### Turn head follow on and off
 
-- By voice (Gemini backend): "look at me" turns following on, "stop looking at
+- By voice (Gemini or Grok gateway backend): "look at me" turns following on, "stop looking at
   me" turns it off. Face detection keeps running either way.
 - `STACKCHAN_HEAD_FOLLOW_DEFAULT=0` starts the gateway with following off, for
   a robot without head servos or when you want the head still.
@@ -301,9 +329,10 @@ cameras it found when it starts.
 
 ## Optional: Grok Bot hand-off
 
+The instructions below are the **optional CLI hand-off for Gemini voice**. Grok login voice uses native tools instead; see [Grok Bot login voice](#grok-bot-login-voice-macos). It does not run the port 18770 forwarding service.
+
 With this on, you can say "Hi Grok, look up tomorrow's weather in Tokyo" or
-"research X for me": Gemini says the task has been sent to the agent
-right away, hands the task to an agent in the Grok Bot app, and reads the
+"research X for me": Gemini acknowledges the accepted task, hands the task to an agent in the Grok Bot app, and reads the
 agent's replies aloud as they come in. Small talk stays with Gemini. The full
 message flow is in [docs/architecture.md](../docs/architecture.md#4-grok-bot-hand-off).
 
@@ -327,7 +356,7 @@ Steps:
    background service) and leave it running:
 
    ```bash
-   uv run stackchan-gbot-proxy
+   uv run --all-extras stackchan-gbot-proxy
    curl -s http://127.0.0.1:18770/health     # {"ok": true, "service": "gbot-http", ...}
    ```
 
@@ -348,7 +377,7 @@ reconnect the MCP client, after a change).
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `GEMINI_API_KEY` | none | Gemini Live key. Required for voice. |
+| `GEMINI_API_KEY` | none | Required only for the Gemini backend, not Grok login voice |
 | `STACKCHAN_GEMINI_VOICE` | `Kore` | Gemini voice name |
 | `STACKCHAN_GEMINI_MODEL` | `gemini-3.8-live` | Gemini Live model (set `gemini-3.1-flash-live-preview` to go back) |
 | `STACKCHAN_TOKEN` | empty | Shared secret with the robot; also protects `/capture` and `/debug/inject-text` |
@@ -364,20 +393,23 @@ reconnect the MCP client, after a change).
 | `STACKCHAN_FACE_TRACKER_BIN` | `tools/vision-tracker/.build/release/groki-vision-tracker` | Face tracker executable |
 | `STACKCHAN_FACE_TRACKER_CAMERA` | empty | Part of the camera name to use; empty uses the tracker's default order |
 | `STACKCHAN_HEAD_FOLLOW_DEFAULT` | on | `0` starts with head follow off; "look at me" turns it on |
-| `STACKCHAN_GEMINI_DEVICE_TOOLS` | off | `1` gives Gemini face/LED/head tools. Firmware with device MCP gets them as MCP calls; the Groki Bot firmware gets them as XiaoZhi emotion, `led` and `head` messages (`head` needs firmware newer than v0.2.1) |
+| `STACKCHAN_GEMINI_DEVICE_TOOLS` | off | `1` gives both voice backends face/LED/head tools. Firmware with device MCP gets them as MCP calls; the Groki Bot firmware gets them as XiaoZhi emotion, `led` and `head` messages (`head` needs firmware newer than v0.2.1) |
 | `STACKCHAN_USB_TRANSPORT` | off | `1` enables the USB serial control channel; it locks `/dev/cu.usbmodem*` |
 | `STACKCHAN_ASK_CLAUDE` | on when the `claude` CLI is found | `0` removes the `ask_claude` voice tool even when the CLI is installed |
 | `STACKCHAN_CLAUDE_BIN` | `claude` on PATH | Claude CLI used by `ask_claude` |
 | `STACKCHAN_CLAUDE_MODEL` | `claude-sonnet-5` | Model passed to the Claude CLI by `ask_claude` and Mac tasks |
-| `STACKCHAN_VOICE_BACKEND` | `gemini` | `xiaozhi` forwards voice to the XiaoZhi cloud instead |
+| `STACKCHAN_VOICE_BACKEND` | `gemini` | `gbot` uses Grok login voice; `xiaozhi` forwards to XiaoZhi cloud |
+| `STACKCHAN_GBOT_VOICE_BOT_ID` | none | Grok voice agent ID; helper and gateway must agree |
+| `STACKCHAN_GBOT_VOICE_URL` | `http://127.0.0.1:18771` | Loopback HTTP login helper only |
+| `STACKCHAN_GBOT_VOICE_LANGUAGE` | `zh` | Input transcription language, e.g. `en` or `auto` |
 | `STACKCHAN_PERSONALITY_FILE` | `personality.md` in this directory, if present | Extra persona text appended to Gemini's instructions. The built-in persona is a short one named Groki that replies in the user's language; text in this file overrides it where they differ (name, language, style) |
-| `STACKCHAN_TOOL_BOT` | empty (off) | Grok Bot agent name for `ask_grokbot`; setting it turns the hand-off on |
-| `STACKCHAN_TOOL_BOT_ID` | empty | Optional agent id sent next to the name |
-| `STACKCHAN_TOOL_BOT_PREFIX` | built-in read-aloud hint | Text put in front of every task; set it empty to send tasks as is |
-| `STACKCHAN_GBOT_URL` | `http://127.0.0.1:18770` | Forwarding service address |
-| `STACKCHAN_ASK_TIMEOUT` | `110` | Seconds to wait for the agent's replies |
-| `STACKCHAN_GBOT_BIN` | `gbot` on PATH | Forwarding service: path to `gbot` |
-| `STACKCHAN_GBOT_HTTP_PORT` | `18770` | Forwarding service port (it always binds 127.0.0.1) |
+| `STACKCHAN_TOOL_BOT` | empty (off) | Agent name; enables native Grok desktop access or Gemini `ask_grokbot` |
+| `STACKCHAN_TOOL_BOT_ID` | empty | Required for native Grok; must match `STACKCHAN_GBOT_VOICE_BOT_ID`. Optional for Gemini |
+| `STACKCHAN_TOOL_BOT_PREFIX` | built-in read-aloud hint | Text put in front of every task; set it empty to send tasks as is (Gemini CLI path only) |
+| `STACKCHAN_GBOT_URL` | `http://127.0.0.1:18770` | Forwarding service address (Gemini CLI path only) |
+| `STACKCHAN_ASK_TIMEOUT` | `110` | Seconds to wait for the agent's replies (Gemini CLI path only) |
+| `STACKCHAN_GBOT_BIN` | `gbot` on PATH | Forwarding service: path to `gbot` (Gemini CLI path only) |
+| `STACKCHAN_GBOT_HTTP_PORT` | `18770` | Forwarding service port (it always binds 127.0.0.1) (Gemini CLI path only) |
 
 ## Safety
 
@@ -409,7 +441,7 @@ reconnect the MCP client, after a change).
 | Head does not follow faces | `/debug/status` → `face_tracking`. `null`: gateway too old or not restarted. `tracker_running: false`: build the tracker, or check the log for `face tracker exited returncode=2` (no camera or no camera permission, see [Allow camera access](#allow-camera-access)). `face_reported: false`: the camera does not see a face. `head_follow: false`: say "look at me". Everything fine but the head is still: the firmware is older than the `head` message; update it. |
 | Flashing fails with "port busy" | Stop the gateway if you enabled `STACKCHAN_USB_TRANSPORT`. |
 | `.env` change has no effect | Restart the gateway; with setup A, reconnect the MCP server (`/mcp` in Claude Code). |
-| The robot says the task could not be sent to the agent | Is `stackchan-gbot-proxy` running (`curl http://127.0.0.1:18770/health`)? Does `gbot bots list` work in a terminal and list the name in `STACKCHAN_TOOL_BOT`? Is the Grok Bot app signed in? |
+| Gemini hand-off says the task could not be sent | Is `stackchan-gbot-proxy` running (`curl http://127.0.0.1:18770/health`)? Does `gbot bots list` work in a terminal and list the name in `STACKCHAN_TOOL_BOT`? Is the Grok Bot app signed in? |
 
 ## MCP tools
 
@@ -425,7 +457,7 @@ reconnect the MCP client, after a change).
 
 ```bash
 uv sync --all-extras
-NO_PROXY="*" uv run pytest -q
+NO_PROXY="*" uv run --all-extras pytest -q
 ```
 
 ## Credits and license

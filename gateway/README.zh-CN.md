@@ -4,17 +4,17 @@
 
 运行在你电脑上的一个 Python 服务，给 [Groki Bot](../README.zh-CN.md) 桌面机器人提供语音能力。它在 Groki Bot 仓库的 `gateway/` 目录；它和固件、Grok Bot 怎么配合，见[架构与通信说明](../docs/architecture.zh-CN.md)。
 
-- **语音对话**：通过 Google Gemini Live，用机器人的麦克风和喇叭对话。
-- **「Hi Grok」唤醒词**：在电脑上识别，喊到机器人之后网关才把麦克风声音发给 Gemini。
+- **语音对话**：默认通过 Google Gemini Live，也可选择 Grok 登录态语音，用机器人的麦克风和喇叭对话。
+- **「Hi Grok」唤醒词**：在电脑上识别，喊到机器人之后网关才把麦克风声音发给所选语音后端。
 - **MCP 服务**：Claude Code、Claude Desktop 或其他 MCP 客户端可以让机器人说话、读取它的状态。
 - **人脸追踪**：在带摄像头的 Mac 上，机器人转头跟着你的脸（见[人脸追踪](#人脸追踪)）。
-- 可选：用语音控制你的 Mac；把难题交给 Claude CLI 回答的 `ask_claude` 语音工具（装了 `claude` 命令行才提供）；把任务交给 Grok Bot 应用里的智能体、再把回复念出来的 `ask_grokbot` 语音工具（见[可选：把任务交给 Grok Bot](#可选把任务交给-grok-bot)）。
+- 可选：用语音控制你的 Mac；把难题交给 Claude CLI 回答的 `ask_claude` 语音工具（装了 `claude` 命令行才提供）；Gemini 后端把任务交给 Grok Bot 应用里的智能体、再把回复念出来的 `ask_grokbot` 语音工具（见[可选：把任务交给 Grok Bot](#可选把任务交给-grok-bot)）。
 
-```
- Claude / MCP 客户端 ──stdio MCP──▶ ┌──────────┐ ◀──WebSocket :8765（XiaoZhi 协议）── Groki Bot
-                                    │   网关   │
-             Gemini Live  ◀────────▶│（本目录）│──HTTP :18770──▶ 转发服务 ──gbot 命令行──▶ Grok Bot 应用
-                                    └──────────┘                （可选）
+```text
+Robot ← XiaoZhi WebSocket :8765 → Gateway ← MCP → Claude / MCP client
+Gateway voice → Gemini Live (default) / Grok login voice
+Grok voice → localhost:18771 login helper → native Grok Bot
+Gemini ask_grokbot → optional localhost:18770 → gbot CLI → Grok Bot
 ```
 
 ## 需不需要装网关
@@ -26,7 +26,7 @@ Groki Bot 固件自己就能对话：刷好固件，在设置页填上自己的 
 - 想让 Claude（或其他 MCP 客户端）让机器人说话；
 - 想用语音操作电脑（Mac 控制、`ask_claude`）。
 
-**配合 Groki Bot 固件能用的部分**：语音对话、唤醒词、人脸追踪，以及 `speak`、`get_status` 两个 MCP 工具。Groki Bot 固件的 XiaoZhi 客户端声明 `features.mcp=false`，所以驱动硬件的 MCP 工具（`move_head`、`set_led`、`set_avatar`、`take_photo` 等）在这个固件上会返回错误；它们需要实现了 XiaoZhi 设备端 MCP 工具的固件。人脸追踪不走 MCP，它用 XiaoZhi 的 `head` 消息转头，固件能处理这条消息。Gemini 自己的设备工具（`STACKCHAN_GEMINI_DEVICE_TOOLS=1`）也不需要 MCP：配合这个固件时，`move_head` 以 `head` 消息发送（需要 v0.2.1 之后的固件），`set_avatar` 以表情消息发送，`set_all_leds` 以 `led` 消息发送。摄像头类工具没有这样的通道，在这个固件上不能用。
+**配合 Groki Bot 固件能用的部分**：语音对话、唤醒词、人脸追踪，以及 `speak`、`get_status` 两个 MCP 工具。Groki Bot 固件的 XiaoZhi 客户端声明 `features.mcp=false`，所以驱动硬件的 MCP 工具（`move_head`、`set_led`、`set_avatar`、`take_photo` 等）在这个固件上会返回错误；它们需要实现了 XiaoZhi 设备端 MCP 工具的固件。人脸追踪不走 MCP，它用 XiaoZhi 的 `head` 消息转头，固件能处理这条消息。两个语音后端共用的设备工具（`STACKCHAN_GEMINI_DEVICE_TOOLS=1`）也不需要 MCP：配合这个固件时，`move_head` 以 `head` 消息发送（需要 v0.2.1 之后的固件），`set_avatar` 以表情消息发送，`set_all_leds` 以 `led` 消息发送。摄像头类工具没有这样的通道，在这个固件上不能用。
 
 ## 准备
 
@@ -51,12 +51,40 @@ uv sync --all-extras
 cp .env.example .env
 ```
 
-打开 `.env`，至少填两项：
+打开 `.env`，选择语音后端并设置设备令牌：
 
-- `GEMINI_API_KEY`：你的 Google AI Studio 密钥。
+- 默认 Gemini：填写 `GEMINI_API_KEY`。Grok 登录态语音按下节配置，不需要这把密钥。
 - `STACKCHAN_TOKEN`：一串随机密码，例如用 `openssl rand -hex 16` 生成。建议填写；只有在完全信任的网络里才留空。
 
 注意：PyPI 上名为 `stackchan-mcp` 的包是上游项目（[kisaragi-mochi/stackchan-mcp](https://github.com/kisaragi-mochi/stackchan-mcp)），不含 Gemini 语音和唤醒词。请按上面的方式从本仓库安装。
+
+### Grok Bot 登录态语音（macOS）
+
+默认后端仍是 Gemini。要改用 Grok 语音，请在同一台 Mac 上安装并登录 Grok Bot 桌面应用，并准备好 Node.js。当前接入基于 Grok Bot 0.71.2 的内部接口，后续应用更新、账号权限与使用额度都可能影响可用性。不需要另配 xAI 语音 API 密钥，也不用重新刷写固件。
+
+安装网关后，在 `gateway/.env` 填入自己的智能体名称与 ID：
+
+```dotenv
+STACKCHAN_VOICE_BACKEND=gbot
+STACKCHAN_GBOT_VOICE_BOT_ID=YOUR_AGENT_ID
+STACKCHAN_TOOL_BOT=YOUR_AGENT_NAME
+STACKCHAN_TOOL_BOT_ID=YOUR_AGENT_ID
+```
+
+另开一个终端窗口，在 `gateway/` 中启动登录桥并保持运行：
+
+```sh
+STACKCHAN_GBOT_VOICE_BOT_ID=YOUR_AGENT_ID \
+STACKCHAN_TOOL_BOT=YOUR_AGENT_NAME \
+STACKCHAN_TOOL_BOT_ID=YOUR_AGENT_ID \
+node scripts/gbot_voice_session_bridge.mjs
+```
+
+Node 登录桥不会自动读取 `.env`，因此需要如上显式传入相同配置。它读取本机应用的现有登录状态和系统钥匙串，凭据仅保留在内存中，且仅监听 `127.0.0.1:18771`。接着按第 3 步的任意一种方式启动 Python 网关；该后端不需要 `GEMINI_API_KEY`。若要切回 Gemini，将 `STACKCHAN_VOICE_BACKEND` 改回 `gemini`，保留原 Gemini 密钥并重启网关即可。
+
+显式配置智能体名称与匹配的 ID 后，Grok 直接调用原生的 `send_task`、`search_conversations` 与 `end_the_call`，不再增加本地 `ask_grokbot` 包装，也不经过 CLI 转发服务。本地硬件和可选 Mac 工具沿用原有的开关，包括名称仍为 `STACKCHAN_GEMINI_DEVICE_TOOLS` 的设备工具开关。注意会话搜索不等于网页搜索；旧有的 `STACKCHAN_GBOT_VOICE_TOOLS` 开关不会开放未知原生工具。
+
+桌面沙盒环境不可用时，语音仍可正常使用，原生通道会在后台持续重试。在在线状态（presence）和事件流就绪前，任务分配与会话搜索会明确返回暂不可用。受理仅代表系统已接收任务，不代表桌面端聊天界面已可见送达。桌面文字消息订阅仍可能报错，会自动独立重连，断开期间遗漏的消息不会补发。当前版本并未宣称已实现完全的功能一致，也未验证支持纯声学打断。详见[验证范围](GBOT_VOICE_VALIDATION.md)和[延迟测量方法](VOICE_LATENCY_BENCHMARK.md)。
 
 ### 唤醒词模型（可选，约 33 MB）
 
@@ -68,10 +96,10 @@ rm sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2
 cd ../..
 ```
 
-没有模型网关也能用，但机器人连着的时候，麦克风听到的所有声音都会发给 Gemini。离线检查模型（macOS，会调用系统的 `say` 命令）：
+没有模型网关也能用，但机器人连着的时候，麦克风听到的所有声音都会发给所选语音后端。离线检查模型（macOS，会调用系统的 `say` 命令）：
 
 ```bash
-uv run python scripts/kws_offline_repro.py --generate-say
+uv run --all-extras python scripts/kws_offline_repro.py --generate-say
 # 命中时输出 hit，没命中时输出 miss
 ```
 
@@ -95,7 +123,7 @@ uv run python scripts/kws_offline_repro.py --generate-say
 ## 3. 启动和检查
 
 ```bash
-uv run stackchan-mcp --check     # 检查配置和端口，立即退出
+uv run --all-extras stackchan-mcp --check     # 检查配置和端口，立即退出
 ```
 
 然后用下面两种方式之一启动网关。
@@ -103,7 +131,7 @@ uv run stackchan-mcp --check     # 检查配置和端口，立即退出
 **A. 让 Claude Code 启动（最简单）**：Claude Code 开着的时候网关就在运行。
 
 ```bash
-claude mcp add groki -- uv run --directory "$(pwd)" stackchan-mcp
+claude mcp add groki -- uv run --all-extras --directory "$(pwd)" stackchan-mcp
 ```
 
 Claude Desktop 在 `claude_desktop_config.json` 里加入下面的配置（路径换成你克隆的绝对路径）：
@@ -113,7 +141,7 @@ Claude Desktop 在 `claude_desktop_config.json` 里加入下面的配置（路�
   "mcpServers": {
     "groki": {
       "command": "uv",
-      "args": ["run", "--directory", "/absolute/path/to/groki-bot/gateway", "stackchan-mcp"]
+      "args": ["run", "--all-extras", "--directory", "/absolute/path/to/groki-bot/gateway", "stackchan-mcp"]
     }
   }
 }
@@ -196,7 +224,7 @@ face tracker unavailable: executable not found at .../tools/vision-tracker/.buil
 
 ### 打开和关闭转头跟随
 
-- 用语音（Gemini 语音后端）：说「看着我」打开跟随，说「别看了」关闭。人脸识别在两种状态下都继续运行。
+- 用语音（Gemini 或 Grok 网关后端）：说「看着我」打开跟随，说「别看了」关闭。人脸识别在两种状态下都继续运行。
 - `STACKCHAN_HEAD_FOLLOW_DEFAULT=0`：网关启动时不跟随，适合没装头部舵机或想让头保持不动的情况。
 - `STACKCHAN_FACE_TRACKER_AUTOSTART=0`：完全不启动追踪程序，适合没有摄像头的电脑。
 
@@ -206,7 +234,9 @@ face tracker unavailable: executable not found at .../tools/vision-tracker/.buil
 
 ## 可选：把任务交给 Grok Bot
 
-打开这项功能后，可以说「Hi Grok，帮我查一下明天东京的天气」或「帮我调研一下 X」：Gemini 马上回一句「已经发给助手啦」，把任务交给 Grok Bot 应用里的智能体，智能体每回一段话，机器人就念一段。闲聊仍由 Gemini 直接回答。完整的消息流程见[架构与通信说明](../docs/architecture.zh-CN.md#4-把任务交给-grok-bot)。
+以下是 **Gemini 语音后端的可选 CLI 联动**。Grok 登录态语音直接走原生工具，见 [Grok Bot 登录态语音](#grok-bot-登录态语音macos)，不启动 18770 转发服务。
+
+打开这项功能后，可以说「Hi Grok，帮我查一下明天东京的天气」或「帮我调研一下 X」：Gemini 确认受理后回应，把任务交给 Grok Bot 应用里的智能体，智能体每回一段话，机器人就念一段。闲聊仍由 Gemini 直接回答。完整的消息流程见[架构与通信说明](../docs/architecture.zh-CN.md#4-把任务交给-grok-bot)。
 
 不配置就不会开启。需要在运行网关的同一台电脑上准备：
 
@@ -219,7 +249,7 @@ face tracker unavailable: executable not found at .../tools/vision-tracker/.buil
 2. 另开一个终端（或另设一个后台服务）启动转发服务，保持运行：
 
    ```bash
-   uv run stackchan-gbot-proxy
+   uv run --all-extras stackchan-gbot-proxy
    curl -s http://127.0.0.1:18770/health     # {"ok": true, "service": "gbot-http", ...}
    ```
 
@@ -239,7 +269,7 @@ curl -s -X POST http://127.0.0.1:18770/send \
 
 | 变量 | 默认值 | 作用 |
 |---|---|---|
-| `GEMINI_API_KEY` | 无 | Gemini Live 密钥，语音对话必填 |
+| `GEMINI_API_KEY` | 无 | 仅 Gemini 后端需要，Grok 登录态语音不需要 |
 | `STACKCHAN_GEMINI_VOICE` | `Kore` | Gemini 的音色 |
 | `STACKCHAN_GEMINI_MODEL` | `gemini-3.8-live` | Gemini Live 模型（改回 `gemini-3.1-flash-live-preview` 即可退回） |
 | `STACKCHAN_TOKEN` | 空 | 与机器人共享的密码，同时保护 `/capture` 和 `/debug/inject-text` |
@@ -255,20 +285,23 @@ curl -s -X POST http://127.0.0.1:18770/send \
 | `STACKCHAN_FACE_TRACKER_BIN` | `tools/vision-tracker/.build/release/groki-vision-tracker` | 人脸追踪程序的路径 |
 | `STACKCHAN_FACE_TRACKER_CAMERA` | 空 | 要用的摄像头名字里的一段；留空按追踪程序的默认顺序选 |
 | `STACKCHAN_HEAD_FOLLOW_DEFAULT` | 开 | 设为 `0` 时网关启动后不转头跟随，说「看着我」再打开 |
-| `STACKCHAN_GEMINI_DEVICE_TOOLS` | 关 | 设为 `1` 让 Gemini 使用表情、灯光、头部工具。带设备端 MCP 的固件通过 MCP 调用收到；Groki Bot 固件通过 XiaoZhi 的表情、`led`、`head` 消息收到（`head` 需要 v0.2.1 之后的固件） |
+| `STACKCHAN_GEMINI_DEVICE_TOOLS` | 关 | 设为 `1` 让两个语音后端使用表情、灯光、头部工具。带设备端 MCP 的固件通过 MCP 调用收到；Groki Bot 固件通过 XiaoZhi 的表情、`led`、`head` 消息收到（`head` 需要 v0.2.1 之后的固件） |
 | `STACKCHAN_USB_TRANSPORT` | 关 | 设为 `1` 启用 USB 串口控制通道；它会独占 `/dev/cu.usbmodem*` |
 | `STACKCHAN_ASK_CLAUDE` | 找到 `claude` 命令行时开启 | 设为 `0` 时即使装了命令行也不提供 `ask_claude` 语音工具 |
 | `STACKCHAN_CLAUDE_BIN` | PATH 里的 `claude` | `ask_claude` 使用的 Claude CLI |
 | `STACKCHAN_CLAUDE_MODEL` | `claude-sonnet-5` | `ask_claude` 和 Mac 后台任务调用 Claude CLI 时使用的模型 |
-| `STACKCHAN_VOICE_BACKEND` | `gemini` | 设为 `xiaozhi` 改为把语音转发到 XiaoZhi 云服务 |
+| `STACKCHAN_VOICE_BACKEND` | `gemini` | `gbot` 使用 Grok 登录态语音；`xiaozhi` 转发到 XiaoZhi 云服务 |
+| `STACKCHAN_GBOT_VOICE_BOT_ID` | 无 | Grok 语音智能体 ID，登录桥与网关必须一致 |
+| `STACKCHAN_GBOT_VOICE_URL` | `http://127.0.0.1:18771` | 仅本机 HTTP 登录桥地址 |
+| `STACKCHAN_GBOT_VOICE_LANGUAGE` | `zh` | 输入转写语言，如 `en` 或 `auto` |
 | `STACKCHAN_PERSONALITY_FILE` | 本目录的 `personality.md`（存在时） | 追加到 Gemini 指令后面的人设文字。内置人设很简短：名字叫 Groki，用用户说话的语言回答；这个文件里的内容和它不一致时（名字、语言、风格）以文件为准 |
-| `STACKCHAN_TOOL_BOT` | 空（关闭） | `ask_grokbot` 使用的 Grok Bot 智能体名字；填了才开启 |
-| `STACKCHAN_TOOL_BOT_ID` | 空 | 可选，和名字一起发送的智能体 ID |
-| `STACKCHAN_TOOL_BOT_PREFIX` | 内置的朗读提示 | 加在每个任务前面的文字；设为空则原样发送任务 |
-| `STACKCHAN_GBOT_URL` | `http://127.0.0.1:18770` | 转发服务地址 |
-| `STACKCHAN_ASK_TIMEOUT` | `110` | 等智能体回复的秒数 |
-| `STACKCHAN_GBOT_BIN` | PATH 里的 `gbot` | 转发服务使用的 `gbot` 路径 |
-| `STACKCHAN_GBOT_HTTP_PORT` | `18770` | 转发服务端口（始终只绑定 127.0.0.1） |
+| `STACKCHAN_TOOL_BOT` | 空（关闭） | 目标智能体名字；启用 Grok 原生桌面联动，或 Gemini 的 `ask_grokbot` |
+| `STACKCHAN_TOOL_BOT_ID` | 空 | Grok 原生路径必填，须匹配 `STACKCHAN_GBOT_VOICE_BOT_ID`；Gemini 路径可选 |
+| `STACKCHAN_TOOL_BOT_PREFIX` | 内置的朗读提示 | 加在每个任务前面的文字；设为空则原样发送任务（仅 Gemini CLI 路径） |
+| `STACKCHAN_GBOT_URL` | `http://127.0.0.1:18770` | 转发服务地址（仅 Gemini CLI 路径） |
+| `STACKCHAN_ASK_TIMEOUT` | `110` | 等智能体回复的秒数（仅 Gemini CLI 路径） |
+| `STACKCHAN_GBOT_BIN` | PATH 里的 `gbot` | 转发服务使用的 `gbot` 路径（仅 Gemini CLI 路径） |
+| `STACKCHAN_GBOT_HTTP_PORT` | `18770` | 转发服务端口（始终只绑定 127.0.0.1）（仅 Gemini CLI 路径） |
 
 ## 安全
 
@@ -290,7 +323,7 @@ curl -s -X POST http://127.0.0.1:18770/send \
 | 头不跟着人脸转 | 看 `/debug/status` 的 `face_tracking`。是 `null`：网关版本太旧或没有重启。`tracker_running: false`：先编译追踪程序，或在日志里找 `face tracker exited returncode=2`（没有摄像头或没有摄像头权限，见[允许使用摄像头](#允许使用摄像头)）。`face_reported: false`：摄像头没看到人脸。`head_follow: false`：说「看着我」。这些都正常但头不动：固件太旧，不认 `head` 消息，需要更新固件。 |
 | 刷固件提示串口被占用 | 如果开了 `STACKCHAN_USB_TRANSPORT`，先停掉网关。 |
 | 改了 `.env` 不生效 | 重启网关；用方式 A 时在 Claude Code 里用 `/mcp` 重新连接。 |
-| 机器人说任务没送到 | `stackchan-gbot-proxy` 在运行吗（`curl http://127.0.0.1:18770/health`）？终端里 `gbot bots list` 能用、并且列出了 `STACKCHAN_TOOL_BOT` 里的名字吗？Grok Bot 应用登录了吗？ |
+| Gemini 路径提示任务没送到 | `stackchan-gbot-proxy` 在运行吗（`curl http://127.0.0.1:18770/health`）？终端里 `gbot bots list` 能用、并且列出了 `STACKCHAN_TOOL_BOT` 里的名字吗？Grok Bot 应用登录了吗？ |
 
 ## MCP 工具
 
@@ -306,7 +339,7 @@ curl -s -X POST http://127.0.0.1:18770/send \
 
 ```bash
 uv sync --all-extras
-NO_PROXY="*" uv run pytest -q
+NO_PROXY="*" uv run --all-extras pytest -q
 ```
 
 ## 致谢与许可证
