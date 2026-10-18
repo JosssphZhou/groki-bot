@@ -527,19 +527,22 @@ async def test_completion_queued_during_user_speech_flushes_at_speech_stop(monke
 
 
 @pytest.mark.asyncio
-async def test_native_notification_does_not_wait_for_pending_manual_response(
+async def test_native_notification_waits_for_already_requested_manual_response(
     monkeypatch,
 ):
     b = make(monkeypatch)
     b._response_requested = True
-    b._pending_response = True
     update = {
         "type": "async_update.add",
         "async_update": {"topic": "work_landed", "payload": []},
     }
     await b._native_update(update, False)
+    b._send.assert_not_awaited()
+    assert b._response_requested is True
+    assert len(b._pending_updates) == 1
+    await b._handle_event({"type": "response.created", "response": {"id": "manual"}})
+    await b._handle_event({"type": "response.done", "response": {"id": "manual"}})
     b._send.assert_awaited_once_with(update)
-    assert b._response_requested is True  # Still belongs only to manual create.
     await b.stop()
 
 
@@ -578,4 +581,27 @@ async def test_native_delivery_and_response_logs_are_content_free(monkeypatch, c
     assert b.metrics["response_triggers"]["async_update"] == 1
     assert "state=first_audio trigger=async_update" in caplog.text
     assert "SENTINEL" not in caplog.text
+    await b.stop()
+
+
+@pytest.mark.asyncio
+async def test_existing_manual_request_precedes_native_without_starvation(monkeypatch):
+    b = make(monkeypatch)
+    b._pending_response = True
+    update = {
+        "type": "async_update.add",
+        "async_update": {"topic": "work_landed", "payload": []},
+    }
+    b._pending_updates.append(update)
+    await b._flush_pending()
+    b._send.assert_awaited_once_with({"type": "response.create"})
+    assert b._response_requested is True and not b._pending_response
+    assert b._pending_updates == [update]
+    await b._handle_event({"type": "response.created", "response": {"id": "manual"}})
+    await b._handle_event({"type": "response.done", "response": {"id": "manual"}})
+    assert [call.args[0]["type"] for call in b._send.call_args_list] == [
+        "response.create",
+        "async_update.add",
+    ]
+    assert not b._pending_updates and not b._response_requested
     await b.stop()

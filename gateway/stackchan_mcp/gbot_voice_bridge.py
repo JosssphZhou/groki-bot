@@ -426,7 +426,18 @@ class GbotVoiceBridge:
                     len(self._pending_updates),
                 )
             return
-        sent_native = False
+        if self._response_requested:
+            if self._pending_updates:
+                logger.info(
+                    "Grok native update state=blocked reason=manual_requested pending=%d",
+                    len(self._pending_updates),
+                )
+            return
+        if self._pending_response:
+            self._pending_response = False
+            self._response_requested = True
+            await self._send({"type": "response.create"})
+            return
         while self._pending_updates:
             event = self._pending_updates.pop(0)
             # Client-native orchestrated updates do not reserve a manual
@@ -442,11 +453,6 @@ class GbotVoiceBridge:
                 topic,
                 len(self._pending_updates),
             )
-            sent_native = True
-        if not sent_native and self._pending_response and not self._response_requested:
-            self._pending_response = False
-            self._response_requested = True
-            await self._send({"type": "response.create"})
 
     async def _request_response(self):
         self._pending_response = True

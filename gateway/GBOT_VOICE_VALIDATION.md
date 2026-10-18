@@ -192,3 +192,9 @@ updates, then model response triggers and first audio. A queued or sent update
 alone does not prove that a result was spoken. These fixes do not yet establish
 the cause of the initially reported missing completion narration; deployed
 native result delivery and audible feedback still require observation.
+
+When an explicit manual response and a native completion are both pending, the
+manual request is sent once first. Native notices wait for that response's
+normal boundary. An already-requested manual response also holds native notices;
+no additional response request is manufactured for the native notice itself.
+This prevents a silent native update from starving an existing tool reply.
