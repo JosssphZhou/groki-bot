@@ -491,3 +491,91 @@ def test_grok_omits_entire_legacy_desktop_instruction_section(monkeypatch):
     assert "system notice" not in instructions
     assert "Hardware instructions." in instructions
     assert "Other local tool instructions." in instructions
+
+
+@pytest.mark.asyncio
+async def test_native_update_without_model_response_does_not_block_later_completion(
+    monkeypatch,
+):
+    b = make(monkeypatch)
+    update = {
+        "type": "async_update.add",
+        "async_update": {"topic": "work_landed", "payload": []},
+    }
+    await b._native_update(update, False)
+    await b._native_update(update, False)
+    assert b._send.await_count == 2
+    assert b._response_requested is False
+    assert not b._pending_updates
+    await b.stop()
+
+
+@pytest.mark.asyncio
+async def test_completion_queued_during_user_speech_flushes_at_speech_stop(monkeypatch):
+    b = make(monkeypatch)
+    await b._handle_event({"type": "input_audio_buffer.speech_started"})
+    update = {
+        "type": "async_update.add",
+        "async_update": {"topic": "work_landed", "payload": []},
+    }
+    await b._native_update(update, False)
+    b._send.assert_not_awaited()
+    await b._handle_event({"type": "input_audio_buffer.speech_stopped"})
+    b._send.assert_awaited_once_with(update)
+    assert not b._pending_updates
+    await b.stop()
+
+
+@pytest.mark.asyncio
+async def test_native_notification_does_not_wait_for_pending_manual_response(
+    monkeypatch,
+):
+    b = make(monkeypatch)
+    b._response_requested = True
+    b._pending_response = True
+    update = {
+        "type": "async_update.add",
+        "async_update": {"topic": "work_landed", "payload": []},
+    }
+    await b._native_update(update, False)
+    b._send.assert_awaited_once_with(update)
+    assert b._response_requested is True  # Still belongs only to manual create.
+    await b.stop()
+
+
+@pytest.mark.asyncio
+async def test_native_delivery_and_response_logs_are_content_free(monkeypatch, caplog):
+    import logging
+
+    b = make(monkeypatch)
+    caplog.set_level(logging.INFO, logger="stackchan_mcp.gbot_voice_bridge")
+    update = {
+        "type": "async_update.add",
+        "event_id": "PRIVATE_EVENT_SENTINEL",
+        "async_update": {
+            "topic": "work_landed",
+            "payload": ["PRIVATE_RESULT_SENTINEL"],
+        },
+    }
+    await b._native_update(update, False)
+    await b._handle_event(
+        {
+            "type": "response.created",
+            "response": {
+                "id": "PRIVATE_RESPONSE_SENTINEL",
+                "metadata": {"trigger": "async_update"},
+            },
+        }
+    )
+    await b._handle_event(
+        {
+            "type": "response.audio.delta",
+            "response_id": "PRIVATE_RESPONSE_SENTINEL",
+            "delta": "AAA=",
+        }
+    )
+    assert b.metrics["native_updates"]["work_landed:sent"] == 1
+    assert b.metrics["response_triggers"]["async_update"] == 1
+    assert "state=first_audio trigger=async_update" in caplog.text
+    assert "SENTINEL" not in caplog.text
+    await b.stop()

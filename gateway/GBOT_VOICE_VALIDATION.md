@@ -175,3 +175,20 @@ Conversation search is not a replacement for local browser search. Existing
 hardware, emotion, tracking, Mac and separately configured agent actions remain
 available because the native catalog has no equivalent. This change is checked
 offline and does not itself establish desktop delivery or deployed behavior.
+
+### Completion delivery queue follow-up
+
+The native client classifies `async_update.add` completion notices as
+orchestrated delivery. They do not reserve a manual `response.create` slot, and
+a particular update is not guaranteed to produce `response.created`.
+The adapter previously reserved that slot, which could block every later
+completion after one silent update. It now keeps native delivery separate from
+manual response requests. Completion notices waiting for user speech to end are
+also flushed on `speech_stopped`, even without a later model response.
+
+Offline regressions cover both stalls and verify that native updates never add
+an extra `response.create`. Safe diagnostics distinguish queued, blocked and sent
+updates, then model response triggers and first audio. A queued or sent update
+alone does not prove that a result was spoken. These fixes do not yet establish
+the cause of the initially reported missing completion narration; deployed
+native result delivery and audible feedback still require observation.

@@ -186,6 +186,8 @@ class GbotVoiceBridge:
         self._output = VoiceOutputQueue()
         self._tools: set[asyncio.Task] = set()
         self._suppressed: set[str] = set()
+        self._response_triggers = {}
+        self._response_audio_seen = set()
         self._active_response = None
         self._response_in_progress = False
         self._drop_until_response = False
@@ -205,6 +207,7 @@ class GbotVoiceBridge:
             "local_http_status": {},
             "native_outcomes": {},
             "native_updates": {},
+            "response_triggers": {},
         }
 
     def _configure_tools(self, session):
@@ -408,18 +411,39 @@ class GbotVoiceBridge:
             self._idle_task = asyncio.create_task(idle())
 
     async def _flush_pending(self):
-        if (
-            self._stopped
-            or self._response_in_progress
-            or self._response_requested
-            or self._user_speaking
-        ):
+        if self._stopped or self._response_in_progress or self._user_speaking:
+            if self._pending_updates:
+                reason = (
+                    "stopped"
+                    if self._stopped
+                    else "active_response"
+                    if self._response_in_progress
+                    else "user_speaking"
+                )
+                logger.info(
+                    "Grok native update state=blocked reason=%s pending=%d",
+                    reason,
+                    len(self._pending_updates),
+                )
             return
-        if self._pending_updates:
+        sent_native = False
+        while self._pending_updates:
             event = self._pending_updates.pop(0)
-            self._response_requested = True
-            await self._send(event)  # Native async_update starts its own response.
-        elif self._pending_response:
+            # Client-native orchestrated updates do not reserve a manual
+            # response slot: the server may choose not to create a response.
+            await self._send(event)
+            topic = event.get("async_update", {}).get("topic")
+            topic = topic if topic in {"work_landed", "user_message"} else "other"
+            counts = self.metrics["native_updates"]
+            key = topic + ":sent"
+            counts[key] = counts.get(key, 0) + 1
+            logger.info(
+                "Grok native update topic=%s state=sent pending=%d",
+                topic,
+                len(self._pending_updates),
+            )
+            sent_native = True
+        if not sent_native and self._pending_response and not self._response_requested:
             self._pending_response = False
             self._response_requested = True
             await self._send({"type": "response.create"})
@@ -714,6 +738,17 @@ class GbotVoiceBridge:
             self._active_response = event.get("response", {}).get("id")
             self._response_in_progress = True
             self._response_requested = False
+            metadata = event.get("response", {}).get("metadata") or {}
+            trigger = metadata.get("trigger") if isinstance(metadata, dict) else None
+            trigger = (
+                trigger
+                if trigger in {"async_update", "server_vad", "response_create"}
+                else "other"
+            )
+            self._response_triggers[self._active_response] = trigger
+            counts = self.metrics["response_triggers"]
+            counts[trigger] = counts.get(trigger, 0) + 1
+            logger.info("Grok voice response state=created trigger=%s", trigger)
             self.response_started_at[self._active_response] = time.monotonic()
             self._drop_until_response = False
         elif kind == "input_audio_buffer.speech_started":
@@ -727,13 +762,23 @@ class GbotVoiceBridge:
                 await self.interrupt()
         elif kind == "input_audio_buffer.speech_stopped":
             self._user_speaking = False
-            # Server VAD owns the response to real microphone speech.
+            # Native completions must not depend on a subsequent VAD response.
+            # Leave ordinary response.create requests to their normal path.
+            if self._pending_updates:
+                await self._flush_pending()
         elif kind in {"response.audio.delta", "response.output_audio.delta"}:
             response_id = event.get("response_id") or self._active_response
             if self._drop_until_response or response_id in self._suppressed:
                 self.metrics["discarded_audio_deltas"] += 1
                 return
             audio = base64.b64decode(event.get("delta", ""), validate=True)
+            if response_id not in self._response_audio_seen:
+                self._response_audio_seen.add(response_id)
+                logger.info(
+                    "Grok voice response state=first_audio trigger=%s bytes=%d",
+                    self._response_triggers.get(response_id, "other"),
+                    len(audio),
+                )
             self.metrics["output_pcm_bytes"] += len(audio)
             self.audio_bytes_by_response[response_id] = (
                 self.audio_bytes_by_response.get(response_id, 0) + len(audio)
