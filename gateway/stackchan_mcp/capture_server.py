@@ -11,6 +11,7 @@ can view the image via the Read tool.
 from __future__ import annotations
 
 import inspect
+import ipaddress
 import json
 import logging
 import os
@@ -32,6 +33,33 @@ INJECT_TEXT_HANDLER_KEY = web.AppKey(
     object,
 )
 DEBUG_STATUS_KEY = web.AppKey("debug_status", DebugStatus)
+
+
+def _local_access_middleware(*, allow_remote: bool):
+    """Restrict tracking and debug routes using only the socket peer address."""
+    last_rejection_log: float | None = None
+
+    @web.middleware
+    async def local_access(request: web.Request, handler):
+        nonlocal last_rejection_log
+        if not allow_remote and (request.path == "/track" or request.path.startswith("/debug/")):
+            try:
+                is_loopback = ipaddress.ip_address(request.remote or "").is_loopback
+            except ValueError:
+                is_loopback = False
+            if not is_loopback:
+                now = time.monotonic()
+                # One shared limit bounds logs even if peers or paths vary.
+                if last_rejection_log is None or now - last_rejection_log >= 30:
+                    logger.warning(
+                        "Rejected remote request: peer=%r path=%r (log limited to once per 30s)",
+                        request.remote, request.path,
+                    )
+                    last_rejection_log = now
+                return web.json_response({"error": "Local requests only"}, status=403)
+        return await handler(request)
+
+    return local_access
 
 
 def _is_authorized(auth_header: str, expected_token: str) -> bool:
@@ -130,7 +158,7 @@ async def handle_inject_text(request: web.Request) -> web.Response:
 
 
 async def handle_debug_status(request: web.Request) -> web.Response:
-    """Return the gateway status snapshot as JSON (read-only, no auth)."""
+    """Return the gateway status snapshot after the local access check."""
     return web.json_response(request.app[DEBUG_STATUS_KEY].snapshot())
 
 
@@ -146,7 +174,15 @@ def create_capture_app(
     debug_status: DebugStatus | None = None,
 ) -> web.Application:
     """Create the HTTP capture application."""
-    app = web.Application()
+    allow_remote = os.getenv("STACKCHAN_ALLOW_REMOTE_DEBUG", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    if allow_remote:
+        logger.warning(
+            "STACKCHAN_ALLOW_REMOTE_DEBUG is enabled: /track and /debug/* accept "
+            "remote requests; text injection still requires the configured token"
+        )
+    app = web.Application(middlewares=[_local_access_middleware(allow_remote=allow_remote)])
     app[CAPTURE_TOKEN_KEY] = capture_token
     app[INJECT_TEXT_HANDLER_KEY] = inject_text_handler
     app[DEBUG_STATUS_KEY] = debug_status or get_debug_status()
