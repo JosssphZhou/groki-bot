@@ -147,6 +147,8 @@ DeviceConfig load()
             load_numeric(h, d, cfg);
         }
     }
+    // Older installs have no language key. Unknown values also use English.
+    if (cfg.device_language != "zh") cfg.device_language = "en";
     // operation_mode migration: when the key is missing (older firmware),
     // synthesise a sensible mode from the legacy openai_enabled /
     // jtts_idle_enabled toggles so the device boots into the same behaviour

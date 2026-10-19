@@ -1038,6 +1038,7 @@ extern "C" void app_main()
         .board = &board,
         .touch = head_touch,
         .jtts_config_json = cfg.jtts_config_json,
+        .device_language = cfg.device_language,
         .has_battery = board.has_battery(),
         .btn_a_toggles_ui = profile.btn_a_toggles_ui,
         .touch_gaze_follow = profile.touch_gaze_follow,

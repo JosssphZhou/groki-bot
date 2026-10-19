@@ -57,6 +57,7 @@ const std::array<SettingDescriptor, kSettingCount> kTable = {{
     str_row("mcp-token",      "mcp_token",  ApplyKind::Immediate,   &DeviceConfig::mcp_api_token, 128, true),
     str_row("lt-config",      "lt_cfg",     ApplyKind::Both,   &DeviceConfig::lt_config_json, 768),
     str_row("device-name",    "dev_name",   ApplyKind::Staged, &DeviceConfig::device_name, 24),
+    str_row("device-language", "dev_lang",  ApplyKind::Staged, &DeviceConfig::device_language, 2),
     str_row("auth-password",  "auth_pwd",   ApplyKind::Immediate,   &DeviceConfig::auth_password, 64, true),
     // --- bools ------------------------------------------------------------
     bool_row("openai-enabled",    "openai_en",  ApplyKind::Staged,
