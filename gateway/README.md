@@ -112,6 +112,14 @@ node scripts/gbot_voice_session_bridge.mjs
 
 The Node helper does not load `.env` automatically; pass the same values as shown. It reads the existing macOS app login and Keychain, keeps credentials in memory, and binds only to `127.0.0.1:18771`. Next, start the Python gateway using one of the methods in step 3. `GEMINI_API_KEY` is not required for this backend. To switch back, set `STACKCHAN_VOICE_BACKEND=gemini` and restart the gateway with your existing Gemini key.
 
+To keep the helper running after closing the terminal or restarting your Mac, install it as a user LaunchAgent from `gateway/` with the same agent ID:
+
+```sh
+python3 scripts/install_gbot_voice_launchd.py --agent-id YOUR_AGENT_ID --enable-desktop --enable-tools
+```
+
+It starts at login and restarts after exit. Add `--dry-run` to preview the plist, or `--replace` to back up and update an existing installation (interrupts current voice calls). Keep this checkout at its installed path. Restart the Python gateway after installation and verify a spoken reply on the robot. The LaunchAgent manages only the login helper; it does not start the Python gateway or repair upstream login or sandbox failures. `http://127.0.0.1:18771/health` confirms helper liveness only. Logs are in `~/Library/Logs/stackchan-gbot-voice.log`.
+
 With the explicit bot name and matching IDs, Grok directly uses native `send_task`, `search_conversations`, and `end_the_call`; it does not add a local `ask_grokbot` wrapper or use the CLI forwarding service. Shared local hardware and optional Mac tools retain their existing opt-in settings, including the legacy-named `STACKCHAN_GEMINI_DEVICE_TOOLS`. Conversation search is not web search. Unknown native tools are not enabled by the legacy `STACKCHAN_GBOT_VOICE_TOOLS` switch.
 
 If the desktop sandbox is unavailable, audio stays usable while the native channel retries in the background. Task dispatching and conversation search are refused until presence and the event stream are ready. Acceptance means the task was accepted, not that a desktop message was visibly delivered. Typed-message subscriptions can still fail; they reconnect independently and do not replay messages missed during a disconnect. No claims of full feature parity or acoustic barge-in are made. See [validation](GBOT_VOICE_VALIDATION.md) and [latency methods](VOICE_LATENCY_BENCHMARK.md).

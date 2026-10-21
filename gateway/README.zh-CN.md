@@ -82,6 +82,14 @@ node scripts/gbot_voice_session_bridge.mjs
 
 Node 登录桥不会自动读取 `.env`，因此需要如上显式传入相同配置。它读取本机应用的现有登录状态和系统钥匙串，凭据仅保留在内存中，且仅监听 `127.0.0.1:18771`。接着按第 3 步的任意一种方式启动 Python 网关；该后端不需要 `GEMINI_API_KEY`。若要切回 Gemini，将 `STACKCHAN_VOICE_BACKEND` 改回 `gemini`，保留原 Gemini 密钥并重启网关即可。
 
+也可以安装为 macOS 用户登录项，避免关闭终端或重启电脑后登录桥退出。在 `gateway/` 执行（ID 与上面配置一致）：
+
+```sh
+python3 scripts/install_gbot_voice_launchd.py --agent-id YOUR_AGENT_ID --enable-desktop --enable-tools
+```
+
+安装项在登录时启动，进程退出后会自动重启。需要预览配置可加 `--dry-run`；更新已有安装可加 `--replace`，会先备份旧配置，并中断当前语音通话。安装后保持仓库路径不变，重启 Python 网关，再对机器人说一句话确认回复。登录项仅管理登录桥，不启动 Python 网关，也不修复上游登录或桌面沙盒故障。`http://127.0.0.1:18771/health` 只确认桥进程存活；日志位于 `~/Library/Logs/stackchan-gbot-voice.log`。
+
 显式配置智能体名称与匹配的 ID 后，Grok 直接调用原生的 `send_task`、`search_conversations` 与 `end_the_call`，不再增加本地 `ask_grokbot` 包装，也不经过 CLI 转发服务。本地硬件和可选 Mac 工具沿用原有的开关，包括名称仍为 `STACKCHAN_GEMINI_DEVICE_TOOLS` 的设备工具开关。注意会话搜索不等于网页搜索；旧有的 `STACKCHAN_GBOT_VOICE_TOOLS` 开关不会开放未知原生工具。
 
 桌面沙盒环境不可用时，语音仍可正常使用，原生通道会在后台持续重试。在在线状态（presence）和事件流就绪前，任务分配与会话搜索会明确返回暂不可用。受理仅代表系统已接收任务，不代表桌面端聊天界面已可见送达。桌面文字消息订阅仍可能报错，会自动独立重连，断开期间遗漏的消息不会补发。当前版本并未宣称已实现完全的功能一致，也未验证支持纯声学打断。详见[验证范围](GBOT_VOICE_VALIDATION.md)和[延迟测量方法](VOICE_LATENCY_BENCHMARK.md)。
