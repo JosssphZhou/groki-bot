@@ -1,0 +1,265 @@
+# SPDX-FileCopyrightText: 2026 Joseph Zhou
+# SPDX-License-Identifier: MIT
+"""Exercise the real proxy through a loopback stand-in for the upstream APIs."""
+
+import asyncio
+import base64
+import json
+import time
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+
+import aiohttp
+from aiohttp import web
+import pytest
+
+from stackchan_mcp.gbot_voice_bridge import GbotVoiceBridge
+from stackchan_mcp.gbot_voice_proxy import GbotVoiceProxy
+from stackchan_mcp.capture_server import DEBUG_STATUS_KEY, handle_voice_health
+from stackchan_mcp.debug_status import DebugStatus
+
+
+async def eventually(predicate, timeout=2):
+    async def wait():
+        while not predicate():
+            await asyncio.sleep(0.005)
+
+    await asyncio.wait_for(wait(), timeout)
+
+
+class Upstream:
+    def __init__(self):
+        self.available = True
+        self.acknowledge = True
+        self.credential_requests = 0
+        self.sockets = []
+        self.updates = []
+        self.finish_responses = True
+        self.failure_reason = "private upstream detail"
+        self.suppress_responses = False
+        self.response_requests = []
+
+    async def credential(self, request):
+        self.credential_requests += 1
+        if not self.available:
+            return web.json_response({"error": self.failure_reason}, status=502)
+        return web.json_response({"credential": {
+            "clientSecret": "test-ephemeral-secret",
+            "expiresAtUnixSeconds": time.time() + 60,
+            "model": "fixture",
+            "websocketUrl": "wss://api.x.ai/v1/realtime",
+        }})
+
+    async def session(self, request):
+        return web.json_response({"instructions": "fixture", "tools": []})
+
+    async def voice(self, request):
+        ws = web.WebSocketResponse(protocols=["xai-client-secret.test-ephemeral-secret"])
+        await ws.prepare(request)
+        self.sockets.append(ws)
+        async for message in ws:
+            if message.type != aiohttp.WSMsgType.TEXT:
+                continue
+            event = json.loads(message.data)
+            if event["type"] == "session.update":
+                self.updates.append(event)
+                if self.acknowledge:
+                    await ws.send_json({"type": "session.updated", "session": {}})
+            elif event["type"] == "response.create":
+                self.response_requests.append(ws)
+                if self.suppress_responses:
+                    continue
+                response_id = "reply-" + str(len(self.sockets))
+                await ws.send_json({"type": "response.created", "response": {"id": response_id}})
+                await ws.send_json({
+                    "type": "response.audio.delta", "response_id": response_id,
+                    "delta": base64.b64encode(bytes(2880 * 4)).decode(),
+                })
+                if self.finish_responses:
+                    await ws.send_json({"type": "response.done", "response": {"id": response_id}})
+        return ws
+
+
+@asynccontextmanager
+async def connected_proxy(monkeypatch, upstream):
+    app = web.Application()
+    app.router.add_get("/credential", upstream.credential)
+    app.router.add_post("/session", upstream.session)
+    app.router.add_get("/voice", upstream.voice)
+    status = DebugStatus()
+    app[DEBUG_STATUS_KEY] = status
+    app.router.add_get("/debug/voice-health", handle_voice_health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    address = "http://127.0.0.1:" + str(site._server.sockets[0].getsockname()[1])
+    original = aiohttp.ClientSession.ws_connect
+
+    def local_voice(session, url, **kwargs):
+        assert url.startswith("wss://api.x.ai/")
+        return original(session, address + "/voice", **kwargs)
+
+    monkeypatch.setattr(aiohttp.ClientSession, "ws_connect", local_voice)
+    monkeypatch.delenv("STACKCHAN_TOOL_BOT", raising=False)
+    monkeypatch.delenv("STACKCHAN_GBOT_VOICE_TOOLS", raising=False)
+
+    def bridge_factory(**kwargs):
+        bridge = GbotVoiceBridge(**kwargs, bridge_url=address, agent_id="fixture", local_tools=False)
+        bridge.response_stall_timeout_s = 0.06
+        return bridge
+
+    delivered = []
+
+    async def sink(message):
+        delivered.append(message)
+
+    proxy = GbotVoiceProxy(
+        bridge_factory=bridge_factory, wake_gate_factory=lambda: None,
+        device_tts_start_delay_s=0, device_frame_pace_ms=0, device_prebuffer_ms=0,
+        debug_status=status,
+    )
+    proxy.reconnect_initial_delay_s = 0.01
+    proxy.reconnect_max_delay_s = 0.04
+    proxy.health_check_interval_s = 0.03
+    proxy.health_check_timeout_s = 0.05
+    proxy.connect_timeout_s = 0.08
+    proxy.health_url = address + "/debug/voice-health"
+    try:
+        yield proxy, delivered, sink
+    finally:
+        await proxy.stop()
+        for socket in upstream.sockets:
+            await socket.close()
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_initial_voice_failure_recovers_without_reconnecting_device(monkeypatch):
+    upstream = Upstream()
+    upstream.available = False
+    async with connected_proxy(monkeypatch, upstream) as (proxy, delivered, sink):
+        assert not await proxy.start(SimpleNamespace(device_id="fixture-device"), {}, sink)
+        upstream.available = True
+        await eventually(lambda: proxy.connected)
+        result = await proxy.speak_text("test reply", session_id="fixture", prompt_audio_frames=[])
+        assert result["ok"] and any(isinstance(frame, bytes) for frame in delivered)
+        assert proxy._status.snapshot()["voice"]["state"] == "connected"
+
+
+@pytest.mark.asyncio
+async def test_open_but_unresponsive_voice_socket_is_replaced(monkeypatch):
+    upstream = Upstream()
+    async with connected_proxy(monkeypatch, upstream) as (proxy, delivered, sink):
+        assert await proxy.start(SimpleNamespace(device_id="fixture-device"), {}, sink)
+        upstream.acknowledge = False
+        await eventually(lambda: not proxy.connected)
+        assert proxy._status.snapshot()["voice"]["state"] == "reconnecting"
+        assert upstream.sockets[0].closed
+        upstream.acknowledge = True
+        await eventually(lambda: proxy.connected)
+        assert len(upstream.sockets) >= 2
+        result = await proxy.speak_text("new reply", session_id="fixture", prompt_audio_frames=[])
+        assert result["ok"] and any(isinstance(frame, bytes) for frame in delivered)
+        assert any(update["session"] == {} for update in upstream.updates)
+
+
+@pytest.mark.asyncio
+async def test_closed_voice_socket_recovers_and_stop_prevents_further_retries(monkeypatch):
+    upstream = Upstream()
+    async with connected_proxy(monkeypatch, upstream) as (proxy, delivered, sink):
+        assert await proxy.start(SimpleNamespace(device_id="fixture-device"), {}, sink)
+        await upstream.sockets[0].close(code=1001)
+        await eventually(lambda: len(upstream.sockets) >= 2 and proxy.connected)
+        upstream.available = False
+        await upstream.sockets[-1].close()
+        await eventually(lambda: proxy._status.snapshot()["voice"]["state"] == "reconnecting")
+        await proxy.stop()
+        attempts = upstream.credential_requests
+        await asyncio.sleep(0.1)
+        assert upstream.credential_requests == attempts
+        assert proxy._status.snapshot()["voice"]["state"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_failed_health_check_releases_speaker_before_reconnecting(monkeypatch):
+    upstream = Upstream()
+    upstream.finish_responses = False
+    async with connected_proxy(monkeypatch, upstream) as (proxy, delivered, sink):
+        assert await proxy.start(SimpleNamespace(device_id="fixture-device"), {}, sink)
+        speaking = asyncio.create_task(proxy.speak_text(
+            "interrupted reply", session_id="fixture", prompt_audio_frames=[]
+        ))
+        try:
+            await eventually(lambda: any(
+                isinstance(item, str) and json.loads(item).get("state") == "start"
+                for item in delivered
+            ))
+            upstream.acknowledge = False
+            await eventually(lambda: proxy._status.snapshot()["voice"]["state"] == "reconnecting")
+            await eventually(lambda: any(
+                isinstance(item, str) and json.loads(item).get("state") == "stop"
+                for item in delivered
+            ))
+        finally:
+            speaking.cancel()
+            await asyncio.gather(speaking, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_no_session_ack_is_unhealthy_even_when_http_and_socket_are_open(monkeypatch):
+    upstream = Upstream()
+    upstream.acknowledge = False
+    async with connected_proxy(monkeypatch, upstream) as (proxy, delivered, sink):
+        assert not await proxy.start(SimpleNamespace(device_id="fixture-device"), {}, sink)
+        async with aiohttp.ClientSession() as client:
+            async with client.get(proxy.health_url) as response:
+                assert response.status == 503
+                assert (await response.json())["ok"] is False
+            upstream.acknowledge = True
+            await eventually(lambda: proxy.connected)
+            async with client.get(proxy.health_url) as response:
+                assert response.status == 200
+                assert (await response.json())["last_verified_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_expired_login_is_actionable_without_exposing_upstream_details(monkeypatch):
+    upstream = Upstream()
+    upstream.available = False
+    upstream.failure_reason = "login_expired_open_grok_bot"
+    async with connected_proxy(monkeypatch, upstream) as (proxy, delivered, sink):
+        assert not await proxy.start(SimpleNamespace(device_id="fixture-device"), {}, sink)
+        async with aiohttp.ClientSession() as client:
+            async with client.get(proxy.health_url) as response:
+                health = await response.json()
+                assert health["action_required"] is True
+                assert health["last_error"] == "login_expired_open_grok_bot"
+        upstream.available = True
+        await eventually(lambda: proxy.connected)
+        health = proxy._status.snapshot()["voice"]
+        assert health["action_required"] is False
+        assert health["last_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_silent_reply_recovers_without_replaying_user_request(monkeypatch):
+    upstream = Upstream()
+    upstream.suppress_responses = True
+    async with connected_proxy(monkeypatch, upstream) as (proxy, delivered, sink):
+        assert await proxy.start(SimpleNamespace(device_id="fixture-device"), {}, sink)
+        speaking = asyncio.create_task(proxy.speak_text(
+            "original request", session_id="fixture", prompt_audio_frames=[]
+        ))
+        try:
+            await eventually(lambda: len(upstream.sockets) >= 2 and proxy.connected)
+            assert len(upstream.response_requests) == 1
+            interrupted = await asyncio.wait_for(speaking, 0.1)
+            assert interrupted["ok"] is False
+            upstream.suppress_responses = False
+            result = await proxy.speak_text("new request", session_id="fixture", prompt_audio_frames=[])
+            assert result["ok"]
+            assert len(upstream.response_requests) == 2
+        finally:
+            speaking.cancel()
+            await asyncio.gather(speaking, return_exceptions=True)

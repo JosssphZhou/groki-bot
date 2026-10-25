@@ -139,6 +139,14 @@ async def handle_debug_panel(request: web.Request) -> web.Response:
     return web.Response(text=PANEL_HTML, content_type="text/html")
 
 
+async def handle_voice_health(request: web.Request) -> web.Response:
+    """Report the supervised voice session, rather than HTTP-server liveness."""
+    health = request.app[DEBUG_STATUS_KEY].snapshot().get("voice")
+    health = health or {"state": "unavailable"}
+    ready = health["state"] == "connected"
+    return web.json_response({"ok": ready, **health}, status=200 if ready else 503)
+
+
 def create_capture_app(
     capture_token: str = "",
     *,
@@ -153,5 +161,6 @@ def create_capture_app(
     app.router.add_post("/capture", handle_capture)
     app.router.add_post("/debug/inject-text", handle_inject_text)
     app.router.add_get("/debug/status", handle_debug_status)
+    app.router.add_get("/debug/voice-health", handle_voice_health)
     app.router.add_get("/debug/panel", handle_debug_panel)
     return app

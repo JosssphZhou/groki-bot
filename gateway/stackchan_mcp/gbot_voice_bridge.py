@@ -179,6 +179,10 @@ class GbotVoiceBridge:
         self._on_interrupt = on_interrupt
         self._on_session_dead = on_session_dead
         self._connected_event = asyncio.Event()
+        self._health_ack = asyncio.Event()
+        self._health_lock = asyncio.Lock()
+        self.response_stall_timeout_s = 30.0
+        self._response_progress_at = None
         self._http = None
         self._ws = None
         self._task = None
@@ -441,6 +445,7 @@ class GbotVoiceBridge:
         if self._pending_response:
             self._pending_response = False
             self._response_requested = True
+            self._response_progress_at = time.monotonic()
             await self._send({"type": "response.create"})
             return
         while self._pending_updates:
@@ -555,6 +560,19 @@ class GbotVoiceBridge:
             counts[key] = counts.get(key, 0) + 1
             logger.info("Grok local request route=%s status=%d", route, response.status)
             if response.status != 200:
+                try:
+                    reason = (await response.json()).get("error")
+                except Exception:
+                    reason = None
+                safe_reasons = {
+                    "login_unavailable", "login_expired_open_grok_bot", "unsupported_storage",
+                    "upstream_http_401", "upstream_http_403", "upstream_http_404",
+                    "upstream_http_429", "bridge_request_failed",
+                }
+                self.metrics["connection_error"] = (
+                    reason if isinstance(reason, str) and reason in safe_reasons
+                    else "connection_failed"
+                )
                 raise RuntimeError("Grok Bot local bridge request failed")
             result = await response.json()
         if result.get("ok") is False:
@@ -681,6 +699,31 @@ class GbotVoiceBridge:
             return False
         return self.running
 
+    async def check_connection(self, timeout=10.0):
+        """Require a new acknowledgement on the actual voice WebSocket."""
+        async with self._health_lock:
+            if self._stopped or not self.running or not self._connected_event.is_set():
+                return False
+            if (
+                self._response_progress_at is not None
+                and not self._user_speaking
+                and not self._tools
+                and time.monotonic() - self._response_progress_at > self.response_stall_timeout_s
+            ):
+                self.metrics["connection_error"] = "response_stalled"
+                return False
+            self._health_ack.clear()
+
+            async def probe():
+                await self._send({"type": "session.update", "session": {}})
+                await self._health_ack.wait()
+
+            try:
+                await asyncio.wait_for(probe(), timeout)
+            except Exception:
+                return False
+            return self.running and not self._stopped
+
     async def _send(self, event):
         if self._ws is None or self._ws.closed:
             raise RuntimeError("Grok Bot voice is disconnected")
@@ -724,6 +767,7 @@ class GbotVoiceBridge:
 
     async def interrupt(self):
         self._cancel_idle()
+        self._response_progress_at = None
         self._pending_response = False
         active = self._response_in_progress or bool(
             self._turn_task and not self._turn_task.done()
@@ -745,7 +789,9 @@ class GbotVoiceBridge:
         kind = event.get("type")
         if kind == "session.updated":
             self._connected_event.set()
+            self._health_ack.set()
         elif kind == "response.created":
+            self._response_progress_at = time.monotonic()
             self._active_response = event.get("response", {}).get("id")
             self._response_in_progress = True
             self._response_requested = False
@@ -763,6 +809,7 @@ class GbotVoiceBridge:
             self.response_started_at[self._active_response] = time.monotonic()
             self._drop_until_response = False
         elif kind == "input_audio_buffer.speech_started":
+            self._response_progress_at = None
             self.metrics["speech_starts"] += 1
             self._user_epoch += 1
             self._user_speaking = True
@@ -772,6 +819,7 @@ class GbotVoiceBridge:
             ):
                 await self.interrupt()
         elif kind == "input_audio_buffer.speech_stopped":
+            self._response_progress_at = time.monotonic()
             self._user_speaking = False
             # Native completions must not depend on a subsequent VAD response.
             # Leave ordinary response.create requests to their normal path.
@@ -782,6 +830,7 @@ class GbotVoiceBridge:
             if self._drop_until_response or response_id in self._suppressed:
                 self.metrics["discarded_audio_deltas"] += 1
                 return
+            self._response_progress_at = time.monotonic()
             audio = base64.b64decode(event.get("delta", ""), validate=True)
             if response_id not in self._response_audio_seen:
                 self._response_audio_seen.add(response_id)
@@ -813,6 +862,7 @@ class GbotVoiceBridge:
             response_id = event.get("response", {}).get("id") or self._active_response
             if response_id != self._active_response:
                 return
+            self._response_progress_at = None
             self._response_in_progress = False
             if response_id not in self._suppressed:
                 # Order normal completion after its audio without blocking VAD.

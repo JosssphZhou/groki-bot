@@ -120,6 +120,16 @@ python3 scripts/install_gbot_voice_launchd.py --agent-id YOUR_AGENT_ID --enable-
 
 It starts at login and restarts after exit. Add `--dry-run` to preview the plist, or `--replace` to back up and update an existing installation (interrupts current voice calls). Keep this checkout at its installed path. Restart the Python gateway after installation and verify a spoken reply on the robot. The LaunchAgent manages only the login helper; it does not start the Python gateway or repair upstream login or sandbox failures. `http://127.0.0.1:18771/health` confirms helper liveness only. Logs are in `~/Library/Logs/stackchan-gbot-voice.log`.
 
+The gateway checks for a fresh server acknowledgement on the active voice connection every 30 seconds without playing test audio. Failed initial connections, dropped or unresponsive connections, and stalled replies trigger automatic recovery. Retries back off from 1 second to at most 30 seconds. Recovery discards old audio and does not replay questions or desktop tasks. Expired logins and incompatible upstream APIs still require account attention or an application update.
+
+`http://127.0.0.1:8766/debug/voice-health` reports the actual voice connection: HTTP 200 when connected, or HTTP 503 while connecting, recovering, or unavailable. `action_required` identifies login/account problems; `last_error` contains only a fixed error category. Use your configured gateway port if different.
+
+From `gateway/`, run an isolated recovery check against real Grok audio. It simulates an unavailable login helper and closes only its own test connection, leaving robot calls alone:
+
+```sh
+PYTHONPATH=. python scripts/probe_gbot_voice_recovery.py --agent-id YOUR_AGENT_ID --output-dir /tmp/groki-recovery-check
+```
+
 With the explicit bot name and matching IDs, Grok directly uses native `send_task`, `search_conversations`, and `end_the_call`; it does not add a local `ask_grokbot` wrapper or use the CLI forwarding service. Shared local hardware and optional Mac tools retain their existing opt-in settings, including the legacy-named `STACKCHAN_GEMINI_DEVICE_TOOLS`. Conversation search is not web search. Unknown native tools are not enabled by the legacy `STACKCHAN_GBOT_VOICE_TOOLS` switch.
 
 If the desktop sandbox is unavailable, audio stays usable while the native channel retries in the background. Task dispatching and conversation search are refused until presence and the event stream are ready. Acceptance means the task was accepted, not that a desktop message was visibly delivered. Typed-message subscriptions can still fail; they reconnect independently and do not replay messages missed during a disconnect. No claims of full feature parity or acoustic barge-in are made. See [validation](GBOT_VOICE_VALIDATION.md) and [latency methods](VOICE_LATENCY_BENCHMARK.md).
