@@ -155,7 +155,7 @@ async def test_open_but_unresponsive_voice_socket_is_replaced(monkeypatch):
         upstream.acknowledge = False
         await eventually(lambda: not proxy.connected)
         assert proxy._status.snapshot()["voice"]["state"] == "reconnecting"
-        assert upstream.sockets[0].closed
+        await eventually(lambda: upstream.sockets[0].closed)
         upstream.acknowledge = True
         await eventually(lambda: proxy.connected)
         assert len(upstream.sockets) >= 2
