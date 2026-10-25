@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <cstdint>
+#include <limits>
 
 #include <sdkconfig.h>
 #include <esp_heap_caps.h>
@@ -23,8 +24,17 @@ constexpr const char* kTag = "spk-dma";
 constexpr uint32_t kDmaCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT;
 
 // Preferred hold, then the sizes we will accept when the heap will not
-// give the full block back after I2S teardown.
-constexpr size_t kReserveSizes[] = {4096, 3072, 2048};
+// give the full block back after I2S teardown. 1536 B still fits two mono
+// 512 B buffers (payload + tlsf slack); below that playRaw is silent again.
+constexpr size_t kReserveSizes[] = {4096, 3072, 2048, 1536};
+constexpr size_t kMinPark = 1536;
+
+// Leave this much INTERNAL RAM unparked once Wi-Fi has been asked to start.
+// esp_wifi_start on CoreS3 (BLE already up, static RX 3 / TX 4) returns
+// ESP_ERR_NO_MEM while a 4096 B block is parked. The boot park is still the
+// full 4096 B so BLE cannot fragment it; the floor applies only after
+// speaker_dma_reserve_repark(), which wifi_start() calls.
+constexpr size_t kInternalFloor = 16 * 1024;
 
 // tlsf header + alignment slack on top of the 512 B payload. Conservative
 // so the smallest fallback still produces a dma_buf_count that fits.
@@ -34,6 +44,7 @@ void* g_block = nullptr;
 size_t g_size = 0;
 size_t g_desired_bufs = 0;
 bool g_reserve_enabled = false;
+bool g_leave_internal_floor = false;
 
 SemaphoreHandle_t reserve_mu()
 {
@@ -53,18 +64,48 @@ size_t buffers_for_hole(size_t hole, size_t payload)
 void hold_largest()
 {
     if (!g_reserve_enabled || g_block != nullptr) return;
+
+    const size_t largest = heap_caps_get_largest_free_block(kDmaCaps);
+    const size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t budget = std::numeric_limits<size_t>::max();
+    if (g_leave_internal_floor) {
+        // Always willing to park the minimum that keeps playRaw alive, even
+        // when that dips under the floor. Anything larger has to leave the
+        // floor free for the Wi-Fi driver.
+        budget = kMinPark;
+        if (free_internal > kInternalFloor) {
+            const size_t room = free_internal - kInternalFloor;
+            if (room > budget) budget = room;
+        }
+    }
+
     for (size_t n : kReserveSizes) {
+        if (n > budget || n > largest) continue;
         void* p = heap_caps_malloc(n, kDmaCaps);
         if (p == nullptr) continue;
         g_block = p;
         g_size = n;
-        ESP_LOGI(kTag, "holding %u B internal DMA (largest now %u)",
-                 static_cast<unsigned>(n),
-                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
+        const unsigned left =
+            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        if (g_leave_internal_floor && free_internal < kInternalFloor + n) {
+            ESP_LOGW(kTag,
+                     "holding %u B internal DMA under %u B floor (INT free now %u, DMA largest %u)",
+                     static_cast<unsigned>(n),
+                     static_cast<unsigned>(kInternalFloor),
+                     left,
+                     static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
+        } else {
+            ESP_LOGI(kTag, "holding %u B internal DMA (largest now %u, INT free %u)",
+                     static_cast<unsigned>(n),
+                     static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)),
+                     left);
+        }
         return;
     }
-    ESP_LOGW(kTag, "DMA reserve failed (largest %u)",
-             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
+    ESP_LOGW(kTag, "DMA reserve failed (DMA largest %u, INT free %u, budget %u)",
+             static_cast<unsigned>(largest),
+             static_cast<unsigned>(free_internal),
+             static_cast<unsigned>(budget));
 }
 
 } // namespace
@@ -152,6 +193,137 @@ extern "C" __attribute__((used)) StackType_t* stackchan_speaker_psram_stack(size
 }
 
 namespace stackchan::app {
+
+namespace {
+
+void log_hold(const char* verb, size_t n)
+{
+    ESP_LOGI(kTag, "%s %u B internal DMA (largest now %u, INT free %u)",
+             verb,
+             static_cast<unsigned>(n),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
+}
+
+// Grow g_block toward the preferred sizes. Never frees it first, so a
+// failed realloc leaves the speaker hole in place. Caller holds the mutex.
+void grow_inplace(bool leave_floor)
+{
+    if (g_block == nullptr) return;
+    const size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t budget = std::numeric_limits<size_t>::max();
+    if (leave_floor) {
+        budget = g_size;
+        if (free_internal > kInternalFloor) {
+            const size_t extra = free_internal - kInternalFloor;
+            if (g_size <= std::numeric_limits<size_t>::max() - extra) {
+                budget = g_size + extra;
+            }
+        }
+    }
+    for (size_t n : kReserveSizes) {
+        if (n <= g_size || n > budget) continue;
+        void* p = heap_caps_realloc(g_block, n, kDmaCaps);
+        if (p == nullptr) continue;
+        g_block = p;
+        g_size = n;
+        log_hold("grew to", n);
+        return;
+    }
+    log_hold("keeping", g_size);
+}
+
+} // namespace
+
+bool speaker_dma_reserve_shrink_for_radio()
+{
+    stackchan_speaker_dma_reserve_enter();
+    if (!g_reserve_enabled || g_block == nullptr) {
+        stackchan_speaker_dma_reserve_leave();
+        return false;
+    }
+    if (g_size <= kMinPark) {
+        log_hold("keeping", g_size);
+        stackchan_speaker_dma_reserve_leave();
+        return true;
+    }
+    const size_t old = g_size;
+    // Split in place. realloc to a smaller size keeps this pointer and frees
+    // the tail, so BLE cannot take the speaker hole between free and malloc.
+    // A failed realloc leaves the original block allocated.
+    void* shrunk = heap_caps_realloc(g_block, kMinPark, kDmaCaps);
+    if (shrunk == nullptr) {
+        ESP_LOGW(kTag, "DMA park shrink %u -> %u failed; still holding %u",
+                 static_cast<unsigned>(old),
+                 static_cast<unsigned>(kMinPark),
+                 static_cast<unsigned>(g_size));
+        stackchan_speaker_dma_reserve_leave();
+        return true;
+    }
+    g_block = shrunk;
+    g_size = kMinPark;
+    ESP_LOGI(kTag, "shrunk DMA park %u -> %u B for Wi-Fi (INT free=%u largest=%u, DMA largest=%u)",
+             static_cast<unsigned>(old),
+             static_cast<unsigned>(kMinPark),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
+    stackchan_speaker_dma_reserve_leave();
+    return true;
+}
+
+bool speaker_dma_reserve_yield()
+{
+    stackchan_speaker_dma_reserve_enter();
+    if (!g_reserve_enabled) {
+        stackchan_speaker_dma_reserve_leave();
+        return false;
+    }
+    if (g_block == nullptr) {
+        ESP_LOGI(kTag, "Wi-Fi yield: no parked block (DMA largest %u)",
+                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
+        stackchan_speaker_dma_reserve_leave();
+        return true;
+    }
+    const size_t n = g_size;
+    heap_caps_free(g_block);
+    g_block = nullptr;
+    g_size = 0;
+    ESP_LOGI(kTag, "yielded %u B for Wi-Fi (INT free=%u largest=%u, DMA largest=%u)",
+             static_cast<unsigned>(n),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
+    stackchan_speaker_dma_reserve_leave();
+    return true;
+}
+
+void speaker_dma_reserve_repark()
+{
+    stackchan_speaker_dma_reserve_enter();
+    // From here on, including Speaker.end() reacquisitions, do not park so
+    // much that Wi-Fi has no internal RAM left for dynamic RX buffers.
+    g_leave_internal_floor = true;
+    hold_largest();
+    stackchan_speaker_dma_reserve_leave();
+}
+
+void speaker_dma_reserve_after_radio(bool radio_started)
+{
+    stackchan_speaker_dma_reserve_enter();
+    if (!g_reserve_enabled) {
+        stackchan_speaker_dma_reserve_leave();
+        return;
+    }
+    if (radio_started) g_leave_internal_floor = true;
+    if (g_block == nullptr) {
+        hold_largest();
+        stackchan_speaker_dma_reserve_leave();
+        return;
+    }
+    grow_inplace(/*leave_floor=*/radio_started);
+    stackchan_speaker_dma_reserve_leave();
+}
 
 void speaker_dma_reserve_boot(bool park_dma_hole)
 {

@@ -241,6 +241,9 @@ extern "C" void app_main()
     // After the segment ring, while internal RAM is still one contiguous
     // region. Held until M5.Speaker.begin() so I2S can carve 512 B DMA
     // buffers out of it instead of the ~400 B holes left once Wi-Fi is up.
+    // wifi_start() shrinks this block to 1536 B across esp_wifi_start (and
+    // drops it only if start still returns ESP_ERR_NO_MEM). Holding 4096 B
+    // through start is what rebooted the device.
     // CoreS3-class only: AtomS3 / AtomNyan / StopWatch do not hit this
     // fragmentation, and pinning 4 KiB there just steals the DMA pool.
     const bool park_spk_dma = board.kind() == stackchan::board::BoardKind::M5Base ||
@@ -373,7 +376,7 @@ extern "C" void app_main()
     {
         auto spk = M5.Speaker.config();
         spk.task_priority = 6;
-        // Ceiling. speaker_dma_reserve releases a 2–4 KiB DMA hole at
+        // Ceiling. speaker_dma_reserve releases a 1.5–4 KiB DMA hole at
         // begin() and caps this to the number of ~512 B buffers that hole
         // can actually hold (16 never fits once the heap is fragmented).
         spk.dma_buf_count = 16;
