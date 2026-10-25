@@ -53,6 +53,7 @@
 #include "servo_task.hpp"
 #include "settings_sinks.hpp"
 #include "shared_state.hpp"
+#include "speaker_dma_reserve.hpp"
 #include "speech.hpp"
 #include "voice_db.hpp"
 #include "hmm_voice.hpp"
@@ -237,6 +238,15 @@ extern "C" void app_main()
     }
 #endif // CONFIG_STACKCHAN_CONVERSATION_ENABLED
 
+    // After the segment ring, while internal RAM is still one contiguous
+    // region. Held until M5.Speaker.begin() so I2S can carve 512 B DMA
+    // buffers out of it instead of the ~400 B holes left once Wi-Fi is up.
+    // CoreS3-class only: AtomS3 / AtomNyan / StopWatch do not hit this
+    // fragmentation, and pinning 4 KiB there just steals the DMA pool.
+    const bool park_spk_dma = board.kind() == stackchan::board::BoardKind::M5Base ||
+                              board.kind() == stackchan::board::BoardKind::TakaoBase;
+    stackchan::app::speaker_dma_reserve_boot(park_spk_dma);
+
     // Diagnostic register dump of the internal-I2C chips (AXP2101 / AW9523 /
     // PY32). Read-only; needed for debugging the recurring "LCD backlight off
     // after LED init" issue — the dump captures whatever state the chips
@@ -363,6 +373,9 @@ extern "C" void app_main()
     {
         auto spk = M5.Speaker.config();
         spk.task_priority = 6;
+        // Ceiling. speaker_dma_reserve releases a 2–4 KiB DMA hole at
+        // begin() and caps this to the number of ~512 B buffers that hole
+        // can actually hold (16 never fits once the heap is fragmented).
         spk.dma_buf_count = 16;
         // Pin to core 1. Default (tskNO_AFFINITY) lets the speaker task
         // land on core 0 where NimBLE + Wi-Fi live; at priority 6 it
