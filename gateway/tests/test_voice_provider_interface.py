@@ -40,8 +40,6 @@ async def test_login_voice_uses_common_wake_and_end_callbacks_without_gemini_key
     proxy = GbotVoiceProxy(
         esp32_ref=lambda: object(),
         bridge_factory=factory,
-        codec_factory=lambda: object(),
-        edge_tts_provider_factory=lambda **kwargs: object(),
         wake_gate_factory=lambda: gate,
     )
     try:

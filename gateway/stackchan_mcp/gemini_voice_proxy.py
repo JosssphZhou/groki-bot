@@ -723,6 +723,7 @@ class GeminiVoiceProxy:
             "Do not add anything and do not call tools:\n"
             + text
         )
+        generation = self._tts_generation
         self._speak_text_active = True
         self._speak_text_frames = 0
         try:
@@ -745,17 +746,20 @@ class GeminiVoiceProxy:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         try:
-            while (self._tts_active or self._codec_has_data() or
-                   (self._speak_waits_for_first_audio() and self._speak_text_frames == 0)):
+            while generation == self._tts_generation and (
+                self._tts_active or self._codec_has_data()
+                or (self._speak_waits_for_first_audio() and self._speak_text_frames == 0)
+            ):
                 if loop.time() > deadline:
                     break
                 await asyncio.sleep(0.05)
         except asyncio.CancelledError:
             raise
         finally:
-            self._speak_text_active = False
+            if generation == self._tts_generation:
+                self._speak_text_active = False
 
-        frames_sent = self._speak_text_frames
+        frames_sent = self._speak_text_frames if generation == self._tts_generation else 0
         return {
             "ok": frames_sent > 0,
             "text": text,
