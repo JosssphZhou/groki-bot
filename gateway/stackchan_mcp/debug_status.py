@@ -127,6 +127,7 @@ class DebugStatus:
     # ---- face tracking ----
     # Set by the gateway; returns the "face_tracking" section of the snapshot.
     face_tracking_provider: Callable[[], dict[str, Any]] | None = field(default=None, repr=False)
+    voice_health_provider: Callable[[], dict[str, Any]] | None = field(default=None, repr=False)
 
     # ---- recent ----
     recent_tool_calls: deque[dict[str, Any]] = field(
@@ -352,6 +353,9 @@ class DebugStatus:
             },
             "face_tracking": (
                 self.face_tracking_provider() if self.face_tracking_provider is not None else None
+            ),
+            "voice": (
+                self.voice_health_provider() if self.voice_health_provider is not None else None
             ),
             "recent": {
                 "tool_calls": list(reversed(self.recent_tool_calls)),

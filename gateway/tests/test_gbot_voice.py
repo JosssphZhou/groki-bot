@@ -136,9 +136,7 @@ async def test_proxy_start_does_not_require_gemini_key(monkeypatch):
     fake.wait_connected = AsyncMock(return_value=True)
     fake.running = True
     fake._connected_event.set()
-    proxy = GbotVoiceProxy(
-        bridge_factory=lambda **kwargs: fake, codec_factory=lambda: object()
-    )
+    proxy = GbotVoiceProxy(bridge_factory=lambda **kwargs: fake)
     assert await proxy.start(type("Info", (), {"device_id": "test"})(), {}, AsyncMock())
     assert proxy.connected
     assert proxy.server_hello["provider"] == "gbot_voice"
