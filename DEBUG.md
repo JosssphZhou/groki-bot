@@ -135,7 +135,9 @@ forwarded to any cloud service.
   at 24 kHz / 60 ms (2.64 seconds of audio), followed by a two-second listening
   interval. Output volume was temporarily zero for this repeated stress test,
   then restored to 100%. Every turn resumed microphone uplink; the same
-  WebSocket connection remained open. Two further audible turns completed.
+  WebSocket connection remained open. Five further audible turns completed,
+  including three replayed at the user's request; post-stress hearing feedback
+  was still pending when this record was written.
 - During the 50-turn sequence, there were no `ALLOC_FAIL`, speaker-I2S init
   failures, asserts, panic or reboot. Last-turn metrics reported 44 chunks and
   zero evicted uplink chunks.
