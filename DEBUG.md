@@ -85,7 +85,7 @@
 - Connected after the initial investigation: ESP32-S3 revision 0.2, 16 MiB
   flash, 8 MiB PSRAM, official `stack-chan` firmware `1.6.0`.
 - Passive serial capture shows a USB/UART reset and a normal startup. No flash
-  write or erase command has been sent. Raw device logs stay local because
+  write or erase command had been sent at that initial checkpoint. Raw device logs stay local because
   they may contain device/network configuration.
 - Testing this project's firmware requires replacing the official firmware;
   prepare and verify a full-flash backup before any separately approved write.
@@ -114,12 +114,58 @@
   measurement, not a runtime Wi-Fi/audio memory watermark.
 - Full 16 MiB test image prepared from the generated flash manifest. It includes
   the bootloader, partition table, OTA selector, app and speech-recognition
-  models. No firmware write has been performed at this checkpoint.
+  models. The device was subsequently flashed after explicit approval.
+
+## Hardware verification (2026-10-27)
+
+Firmware code commit: `d903c0f`, built with the parameters above. The connected
+CoreS3/M5Base was flashed and the write digest verified. Test configuration used
+Wi-Fi and the firmware's XiaoZhi WebSocket/Opus path to a local server. Servos
+were disabled; microphone packets were counted and discarded, not recorded or
+forwarded to any cloud service.
+
+- Five consecutive boots with saved Wi-Fi configuration reached `ready` and
+  completed `esp_wifi_start`, without allocation failures or panic. The saved
+  network was initially unavailable; the current network was then configured
+  privately and the device obtained an IP and established the voice session.
+- Six initial audible turns completed. The user confirmed clear speech,
+  suitable volume at 100%, and touch-triggered interruption; the server observed
+  two device abort messages.
+- A fresh continuous run completed **50 turns**, each containing 44 Opus frames
+  at 24 kHz / 60 ms (2.64 seconds of audio), followed by a two-second listening
+  interval. Output volume was temporarily zero for this repeated stress test,
+  then restored to 100%. Every turn resumed microphone uplink; the same
+  WebSocket connection remained open. Two further audible turns completed.
+- During the 50-turn sequence, there were no `ALLOC_FAIL`, speaker-I2S init
+  failures, asserts, panic or reboot. Last-turn metrics reported 44 chunks and
+  zero evicted uplink chunks.
+- Runtime internal free memory fluctuated with playback/listening around
+  13–20 KiB. After the final audible turns it settled at 13,147 bytes across
+  four successive samples; largest internal block was 6,144 bytes and largest
+  free DMA block 3,712 bytes. PSRAM free was 4,583,676 bytes in those samples.
+  The observed internal low-water mark was 6,015 bytes. This remains a tight
+  budget; the sequence showed no continuing per-turn decline.
+- Reopening the USB serial port caused a USB/UART reset before the continuous
+  run. The capture then kept the port open throughout all 50 turns. This
+  operator-induced reset is excluded from runtime reboot claims.
+
+### Unresolved watchdog observation
+
+Before the first playback of the continuous run, at approximately 23.7 and
+28.7 seconds after boot, `task_wdt` reported that IDLE1 had not run in time.
+There was no reboot or allocation failure. Backtraces decoded against the
+actual firmware ELF point to Opus uplink encoding (`encode_and_send` /
+`flush_encoded_frames`) and sprite/face rendering (`render_task_entry`).
+These source paths are unchanged from main. No further watchdog warning
+occurred during the subsequent 50 turns and final audible checks. This does
+not establish the cause or prove the warning harmless; it is an outstanding
+scheduling investigation, not a clean whole-device stability result.
 
 ## Remaining acceptance
 
-Hardware acceptance is pending on the connected device, which still runs
-official firmware. Verify boot with saved Wi-Fi configuration, repeated microphone/speaker
-transitions, audible playback and touch, and memory over a longer conversation.
-Issue #2 remains open: these local checks do not establish that all steady-state
-TLS/WS allocations or DMA fragmentation on hardware have been resolved.
+Issue #2 remains open and this PR stays a draft. The local TTS allocation leak
+and speaker task-storage lifetime defects are covered by regressions, and the
+real device audio sequence above passed within its stated scope. Hours-long
+operation, cloud/direct-TLS variants, enabled-servo load, and the startup
+IDLE1 watchdog warnings still require follow-up. The formal Grok voice backend
+was not configured by this hardware probe.
