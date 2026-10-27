@@ -171,3 +171,149 @@ real device audio sequence above passed within its stated scope. Hours-long
 operation, cloud/direct-TLS variants, enabled-servo load, and the startup
 IDLE1 watchdog warnings still require follow-up. The formal Grok voice backend
 was not configured by this hardware probe.
+
+## Startup watchdog follow-up (2026-10-27)
+
+### Observations
+
+- The prior continuous capture reported IDLE1 starvation at 23.659 and
+  28.659 seconds, during microphone uplink before the first playback at
+  30.540 seconds. Both render and XiaoZhi sender have priority 5 on core 1.
+- Render already blocks for at least 20 ms after each completed frame.
+  Sender drains available queue entries without an explicit blocking rest;
+  queue receive only blocks when no PCM is available.
+- Pinned esp_audio_codec defaults already select Opus complexity 0. The
+  firmware uses 16 kHz mono / 60 ms VOIP frames, 24 kbps, PSRAM sender stack.
+- No watchdog timeout or priority settings have been changed for this work.
+
+### Hypotheses
+
+1. **H4 (leading): combined render + encode load keeps core 1 runnable.**
+   Supports: both observed CPU1 tasks run at priority 5; sender can consume
+   render's sleep windows while PCM queues accumulate. Conflicts: earlier
+   warnings stopped after playback began. Test: first reproduce with a
+   longer listening-only baseline, then change only sender affinity to core 0
+   as a diagnostic and repeat under identical server/configuration.
+2. **H5: network send blocks or spins on core 1.** Supports: warnings occur
+   during uplink. Conflicts: decoded traces point to codec/render, and the
+   local server receives packets. Test: measure codec and send elapsed time
+   independently with minimal instrumentation if the baseline reproduces.
+3. **H6: transient startup work, rather than sustained audio load.** Supports:
+   warnings appeared soon after session setup. Conflicts: only ~18 seconds
+   of listening preceded playback, so longer continuous listening is untested.
+   Test: collect 120 seconds of listening-only startup without playback.
+
+### Planned experiment W1
+
+Run the unchanged firmware with the same local counting-only audio server,
+reset once, and capture 120 seconds of continuous listening. No microphone
+content is retained. Record warning times, connection continuity, and heap.
+
+### W1 interim result / W2 plan
+
+Unchanged firmware reproduced periodic IDLE1 warnings at 13.556, 18.556,
+23.556 and 28.556 seconds while continuously listening. W1 capture continues
+for its full planned duration. This contradicts a startup-only explanation.
+
+W2 changes exactly one line: pin only XiaoZhi sender to core 0 instead of
+core 1. Build separately from the running baseline, then flash only the app
+partition (preserving configuration) and repeat 120 seconds of listening.
+If IDLE1 warnings cease without shifting to IDLE0 or causing packet loss,
+this supports combined core-1 load as the cause. This is diagnostic code,
+not yet a production fix. Baseline app and ELF have been preserved locally.
+
+W1 completed 120 seconds: six watchdog warnings (13.556 through 38.556 s,
+5-second spacing), with one connection and continuing microphone packets.
+Warnings stopped later even without playback. Thus timing/startup load may
+contribute, and H6 is not fully excluded; it is not an isolated single alert.
+
+### W2 result / W3 plan
+
+W2 is rejected as a fix: moving sender alone shifted starvation from IDLE1
+to IDLE0 (warnings at 21.625, 26.625 and 31.625 s). Rendering improved to
+roughly 9-10 fps, but the sender's core still missed idle. Reverted the affinity
+experiment. This points to the sender's own runnable duty cycle, not just
+co-location with rendering.
+
+W3 adds three diagnostic lines around encode/send, reporting elapsed encode
+and send time and queue depth every tenth frame. Affinity is back to the
+baseline core 1. The pinned build runs at 160 MHz and Opus complexity 0;
+no speed, codec, priority or watchdog changes are made. Expect large encode
+cost and/or backlog if CPU work is responsible; large send time instead
+would promote H5. Diagnostic lines will be removed after measurement.
+
+### W3 result / W4 plan
+
+Timing samples show encode median about 51 ms (maximum 89.5 ms) versus send
+median about 5 ms (maximum 10.1 ms); wall time includes preemption. Queue
+backlog grew to 37 chunks, then drained near 34 s, after which watchdog
+warnings stopped. This supports busy backlog draining without a blocking
+point; no multi-second network-send stall was observed. H5 is not supported
+in this reproduction. The 160 MHz CPU and render work leave little headroom.
+
+W3 instrumentation was removed. W4 changes one line in the original affinity
+configuration: block for 2 ms after each processed 60 ms Opus frame. This tests
+whether a small, real scheduling gap (rather than a yield to equal-priority
+tasks) permits idle work under backlog without compromising audio throughput.
+Watchdog timeout, codec settings and task priority stay unchanged. Repeat
+continuous listening and check watchdogs, uplink continuity and audio metrics.
+
+Scheduling interpretation was cross-checked against Espressif's
+[ESP-IDF 5.5 task watchdog documentation](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-reference/system/wdts.html):
+the watched idle tasks need CPU time. Resetting the watchdog in the busy task
+would not validate that idle cleanup can run, so no watchdog bypass is used.
+
+### W4 result / refined startup hypothesis / W5 plan
+
+W4 had no IDLE1 warning in 150 seconds, but exposed a separate IDLE0 warning
+at 14.650 s. The decoded CPU0/main stack is `voice_db::ensure_partition` ->
+`nvs_flash_init_partition_ptr` -> NVS PageManager/flash reads/heap scanning.
+The `storage` partition is 0x5a0000 bytes. `avatar_vm::storage::load()` already
+initialized this same partition earlier in app_main.
+
+Pinned IDF 5.5.4 implementation confirms that the pointer API calls
+`init_custom`, which unconditionally calls `Storage::init` even when storage
+exists; this scans every page again. The by-name API first checks the loaded
+storage list and returns ESP_OK without rescanning. This refines H6: the
+redundant startup flash scan can both monopolize main/core0 and compete with
+codec/cache work, triggering the temporary queue backlog on core1. Heavy
+voice parsing is not implicated by this stack; no voice blob is installed.
+
+W5 reverts W4's 2 ms rest and changes only the voice DB init call to the
+by-name API for this diagnostic (the earlier avatar init is present on this
+boot path). Repeat startup/listening. If both core warnings disappear with
+the original sender, redundant initialization is the minimal fix target.
+A final implementation must retain pointer initialization as a fallback
+when voice_db is the first user, because existing partition tables mark
+storage as spiffs rather than NVS. Do not change partition offsets or erase
+user data.
+
+### W5 final result and two confirmed paths
+
+The complete 150-second W5 capture disproved a single-cause conclusion:
+startup stayed clear, but IDLE1 warned at 140.395 and 145.395 s during normal
+listening. The earlier observation of two clean minutes was only interim.
+Thus skipping the redundant NVS scan fixes startup CPU0 work, but does not
+bound sender CPU1 occupancy under later backlog. W4 separately eliminated
+IDLE1 for its capture while leaving the NVS/main IDLE0 warning.
+
+Final changes combine the independently tested paths: reuse registered NVS
+with the first-use custom-subtype fallback, and block 2 ms after each encoded
+60 ms uplink frame. No affinity/priority/watchdog/codec changes remain.
+The original sender regression fails after a continuously replenished PCM
+queue produces over five seconds of runnable work; tests also verify exact
+sample order, partial-frame retention and disconnected-buffer discard. This
+models sender scheduling, not the complete dual-core runtime, so final-device
+acceptance remains necessary.
+
+The partition regression executes the actual ensure_partition function.
+Original code fails the already-loaded case; name-only diagnostic code fails
+first use of a custom-subtype partition. Final fallback passes both, ordinary
+NVS first use, and absent-partition handling. No partition erase/layout change.
+
+### Local verification of the combined fix
+
+All four host regression suites pass on macOS and Linux, including seven new
+partition/sender cases. The CoreS3 Docker build succeeds with the unchanged
+IDF 5.5.4 configuration. Combined-fix device acceptance is in progress;
+interim clean captures are not counted as completed runs.

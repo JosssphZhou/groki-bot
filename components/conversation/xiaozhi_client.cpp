@@ -802,6 +802,10 @@ private:
                 return;
             }
             enc_accum_.erase(enc_accum_.begin(), enc_accum_.begin() + kUplinkFrameSamples);
+            // A backlogged PCM queue never blocks the sender. Leave a real
+            // scheduling gap for idle cleanup alongside rendering; yielding
+            // only to equal-priority tasks still starves IDLE1.
+            vTaskDelay(pdMS_TO_TICKS(2));
         }
     }
 
