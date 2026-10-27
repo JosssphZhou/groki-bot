@@ -1,5 +1,5 @@
 diff --git a/src/utility/Speaker_Class.cpp b/src/utility/Speaker_Class.cpp
-index d65fc4f..1bab24a 100644
+index d65fc4f..3ca6d49 100644
 --- a/src/utility/Speaker_Class.cpp
 +++ b/src/utility/Speaker_Class.cpp
 @@ -24,6 +24,7 @@
@@ -10,10 +10,21 @@ index d65fc4f..1bab24a 100644
  
  #if defined ( CONFIG_IDF_TARGET_ESP32C3 ) || defined ( CONFIG_IDF_TARGET_ESP32C6 ) || defined ( CONFIG_IDF_TARGET_ESP32H2 ) || defined ( CONFIG_IDF_TARGET_ESP32S3 ) || defined ( CONFIG_IDF_TARGET_ESP32P4 )
   #if __has_include(<driver/i2s_std.h>)
-@@ -909,18 +910,52 @@ label_continue_sample:
+@@ -904,23 +905,62 @@ label_continue_sample:
+       m5gfx::pinMode(self->_cfg.pin_data_out, m5gfx::pin_mode_t::output);
+     }
  #endif
-   }
- 
++#if CONFIG_SPIRAM && CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM
++    // end() owns deletion. Self-deletion defers TCB cleanup to idle, so a
++    // timed delay cannot make a shared static TCB safe for the next turn.
++    for (;;) { vTaskSuspend(nullptr); }
++#else
+     self->_task_handle = nullptr;
+     vTaskDelete(nullptr);
+ #endif
++#endif
++  }
++
 +#if !defined (SDL_h_)
 +  // Weak on purpose: stackchan defines the strong symbols. A build without
 +  // them (or the SDL host build, which never reaches this block) leaves the
@@ -25,12 +36,11 @@ index d65fc4f..1bab24a 100644
 +    void stackchan_speaker_dma_reserve_leave(void) __attribute__((weak));
 +    void stackchan_speaker_dma_reserve_release(void) __attribute__((weak));
 +    void stackchan_speaker_dma_reserve_reacquire(void) __attribute__((weak));
-+    StackType_t* stackchan_speaker_psram_stack(size_t bytes) __attribute__((weak));
-+  }
+   }
 +  // Failed I2S init must not be retried from playRaw on every caller tick.
 +  static TickType_t s_i2s_retry_after = 0;
 +#endif
-+
+
    bool Speaker_Class::begin(void)
    {
      if (_task_running) { return true; }
@@ -64,35 +74,35 @@ index d65fc4f..1bab24a 100644
      if (res)
      {
        _task_running = true;
-@@ -928,19 +963,63 @@ label_continue_sample:
+@@ -928,20 +968,62 @@ label_continue_sample:
        _task_handle = SDL_CreateThread(reinterpret_cast<SDL_ThreadFunction>(spk_task), "spk_task", this);
  #else
        size_t stack_size = 1280 + (_cfg.dma_buf_len * sizeof(uint32_t));
 -
 +      _task_handle = nullptr;
-+      // PSRAM stack: spk_task resamples and writes I2S. It does not run with
-+      // the flash cache disabled, so an external stack is safe and keeps
-+      // ~2 KiB of internal DMA RAM free.
-+      StackType_t* ext_stack = (stackchan_speaker_psram_stack != nullptr)
-+                                   ? stackchan_speaker_psram_stack(stack_size)
-+                                   : nullptr;
-+      if (ext_stack != nullptr) {
-+        static StaticTask_t s_spk_tcb;
-+        BaseType_t core = tskNO_AFFINITY;
++#if CONFIG_SPIRAM && CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM
++      // spk_task does not write flash. Allocate a fresh external stack per
++      // task, and let end() reclaim it after the task has stopped using I2S.
++      BaseType_t core = tskNO_AFFINITY;
  #if portNUM_PROCESSORS > 1
 -      if (_cfg.task_pinned_core < portNUM_PROCESSORS)
 -      {
 -        xTaskCreatePinnedToCore(spk_task, "spk_task", stack_size, this, _cfg.task_priority, &_task_handle, _cfg.task_pinned_core);
-+        if (_cfg.task_pinned_core < portNUM_PROCESSORS) {
-+          core = static_cast<BaseType_t>(_cfg.task_pinned_core);
-+        }
-+#endif
-+        _task_handle = xTaskCreateStaticPinnedToCore(
-+            spk_task, "spk_task", stack_size, this, _cfg.task_priority,
-+            ext_stack, &s_spk_tcb, core);
++      if (_cfg.task_pinned_core < portNUM_PROCESSORS) {
++        core = static_cast<BaseType_t>(_cfg.task_pinned_core);
        }
 -      else
-+      if (_task_handle == nullptr) {
+ #endif
+-      {
+-        xTaskCreate(spk_task, "spk_task", stack_size, this, _cfg.task_priority, &_task_handle);
++      if (xTaskCreatePinnedToCoreWithCaps(
++              spk_task, "spk_task", stack_size, this, _cfg.task_priority,
++              &_task_handle, core, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
++        xTaskCreatePinnedToCoreWithCaps(
++            spk_task, "spk_task", stack_size, this, _cfg.task_priority,
++            &_task_handle, core, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+       }
++#else
 +#if portNUM_PROCESSORS > 1
 +        if (_cfg.task_pinned_core < portNUM_PROCESSORS)
 +        {
@@ -100,19 +110,17 @@ index d65fc4f..1bab24a 100644
 +        }
 +        else
  #endif
--      {
--        xTaskCreate(spk_task, "spk_task", stack_size, this, _cfg.task_priority, &_task_handle);
 +        {
 +          xTaskCreate(spk_task, "spk_task", stack_size, this, _cfg.task_priority, &_task_handle);
 +        }
-       }
- #endif
++#endif
++#endif
 +      if (_task_handle == nullptr) {
 +        _task_running = false;
 +        res = false;
 +      }
-+    }
-+
+     }
+
 +#if !defined (SDL_h_)
 +    if (!res) {
 +      // init_std_mode can fail after i2s_new_channel. Drop that channel so
@@ -125,27 +133,34 @@ index d65fc4f..1bab24a 100644
 +      s_i2s_retry_after = xTaskGetTickCount() + pdMS_TO_TICKS(1000);
 +    } else {
 +      s_i2s_retry_after = 0;
-     }
++    }
 +    if (stackchan_speaker_dma_reserve_leave != nullptr) {
 +      stackchan_speaker_dma_reserve_leave();
 +    }
 +#else
 +    (void)i2s_ok;
 +#endif
- 
++
      return res;
    }
-@@ -960,6 +1039,9 @@ label_continue_sample:
+
+@@ -959,7 +1041,15 @@ label_continue_sample:
+         _task_handle = nullptr;
  #else
          xTaskNotifyGive(_task_handle);
++#if CONFIG_SPIRAM && CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM
++        // The worker suspends only after its final I2S access. Deleting it
++        // here avoids the extra internal-RAM cleanup task used by self-delete.
++        while (eTaskGetState(_task_handle) != eSuspended) { vTaskDelay(1); }
++        vTaskDeleteWithCaps(_task_handle);
++        _task_handle = nullptr;
++#else
          do { vTaskDelay(1); } while (_task_handle);
-+        // spk_task clears _task_handle then calls vTaskDelete. One more tick
-+        // lets that return before a later begin() reuses the static PSRAM TCB.
-+        vTaskDelay(1);
++#endif
  #endif
        }
      }
-@@ -969,9 +1051,32 @@ label_continue_sample:
+@@ -969,9 +1059,32 @@ label_continue_sample:
        auto chinfo = &_ch_info[ch];
        chinfo->wavinfo[0].clear();
        chinfo->wavinfo[1].clear();
@@ -178,7 +193,7 @@ index d65fc4f..1bab24a 100644
  #endif
    }
  
-@@ -1037,7 +1142,9 @@ label_continue_sample:
+@@ -1037,7 +1150,9 @@ label_continue_sample:
  
    bool Speaker_Class::_play_raw(const void* data, size_t array_len, bool flg_16bit, bool flg_signed, float sample_rate, bool flg_stereo, uint32_t repeat_count, int channel, bool stop_current_sound, bool no_clear_index)
    {

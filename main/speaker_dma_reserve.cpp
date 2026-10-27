@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <limits>
 
-#include <sdkconfig.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
@@ -165,33 +164,6 @@ extern "C" __attribute__((used)) void stackchan_speaker_dma_reserve_reacquire(vo
     hold_largest();
 }
 
-extern "C" __attribute__((used)) StackType_t* stackchan_speaker_psram_stack(size_t bytes)
-{
-#if CONFIG_SPIRAM && CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM
-    static StackType_t* stack = nullptr;
-    static size_t cap = 0;
-    if (bytes == 0) return nullptr;
-    // xTaskCreateStatic requires 16-byte stack alignment, and aligned_alloc
-    // requires the size to be a multiple of the alignment.
-    constexpr size_t kAlign = 16;
-    const size_t bytes_aligned = (bytes + kAlign - 1) & ~(kAlign - 1);
-    if (stack != nullptr) return cap >= bytes_aligned ? stack : nullptr;
-    stack = static_cast<StackType_t*>(
-        heap_caps_aligned_alloc(kAlign, bytes_aligned, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (stack == nullptr) {
-        ESP_LOGW(kTag, "PSRAM speaker stack %u B failed; using internal",
-                 static_cast<unsigned>(bytes_aligned));
-        return nullptr;
-    }
-    cap = bytes_aligned;
-    ESP_LOGI(kTag, "speaker task stack %u B in PSRAM", static_cast<unsigned>(bytes_aligned));
-    return stack;
-#else
-    (void)bytes;
-    return nullptr;
-#endif
-}
-
 namespace stackchan::app {
 
 namespace {
@@ -340,9 +312,7 @@ void speaker_dma_reserve_boot(bool park_dma_hole)
         reinterpret_cast<uintptr_t>(stackchan_speaker_dma_reserve_release);
     const uintptr_t reacquire =
         reinterpret_cast<uintptr_t>(stackchan_speaker_dma_reserve_reacquire);
-    const uintptr_t stack =
-        reinterpret_cast<uintptr_t>(stackchan_speaker_psram_stack);
-    asm volatile("" :: "r"(enter), "r"(leave), "r"(release), "r"(reacquire), "r"(stack));
+    asm volatile("" :: "r"(enter), "r"(leave), "r"(release), "r"(reacquire));
 }
 
 } // namespace stackchan::app
