@@ -151,7 +151,7 @@ forwarded to any cloud service.
   run. The capture then kept the port open throughout all 50 turns. This
   operator-induced reset is excluded from runtime reboot claims.
 
-### Unresolved watchdog observation
+### Watchdog observation before the follow-up
 
 Before the first playback of the continuous run, at approximately 23.7 and
 28.7 seconds after boot, `task_wdt` reported that IDLE1 had not run in time.
@@ -160,17 +160,18 @@ actual firmware ELF point to Opus uplink encoding (`encode_and_send` /
 `flush_encoded_frames`) and sprite/face rendering (`render_task_entry`).
 These source paths are unchanged from main. No further watchdog warning
 occurred during the subsequent 50 turns and final audible checks. This does
-not establish the cause or prove the warning harmless; it is an outstanding
-scheduling investigation, not a clean whole-device stability result.
+not establish the cause or prove the warning harmless. The follow-up below
+reproduces and separates the two watchdog paths; this earlier run alone was
+not a clean whole-device stability result.
 
 ## Remaining acceptance
 
 Issue #2 remains open and this PR stays a draft. The local TTS allocation leak
 and speaker task-storage lifetime defects are covered by regressions, and the
-real device audio sequence above passed within its stated scope. Hours-long
-operation, cloud/direct-TLS variants, enabled-servo load, and the startup
-IDLE1 watchdog warnings still require follow-up. The formal Grok voice backend
-was not configured by this hardware probe.
+real device audio sequence above passed within its stated scope. The watchdog
+follow-up and its later acceptance are recorded below. Hours-long operation,
+cloud/direct-TLS variants and enabled-servo load remain outside this probe.
+The formal Grok voice backend was not configured.
 
 ## Startup watchdog follow-up (2026-10-27)
 
@@ -317,3 +318,46 @@ All four host regression suites pass on macOS and Linux, including seven new
 partition/sender cases. The CoreS3 Docker build succeeds with the unchanged
 IDF 5.5.4 configuration. Combined-fix device acceptance is in progress;
 interim clean captures are not counted as completed runs.
+
+## Combined watchdog-fix hardware acceptance (2026-10-27)
+
+Final code commit: `820b654`. App SHA256:
+`cfb2d1d8783b2071a37a60cf8e87a76b8dd85a064db6548033d0b4925a7ae104`.
+The app partition was flashed and verified; private NVS configuration was
+retained. App size is `0x338750` (19% OTA headroom); static D/IRAM remains
+127,425 bytes, passing the 118,784-byte floor. The patched M5Unified submodule
+is intentionally dirty because the committed patch is applied during build.
+
+- The combined source first passed a 180-second startup/listening capture.
+  After committing and rebuilding, the exact final app passed another
+  180-second startup/listening capture, then a separate **900-second** run.
+- The long run began with seven minutes of uninterrupted listening, followed
+  by 50 playback/listening turns (44 Opus frames, 2.64 seconds each). Playback
+  was muted for repetition, but followed the real decoder/I2S path. Every
+  turn resumed microphone upload; the connection remained unchanged through
+  all 50 turns. Final metrics recorded zero evicted uplink chunks.
+- Three server-initiated WebSocket closes each recovered a new session and
+  microphone upload in approximately 4.1 seconds. Two further audible turns
+  completed at 100% volume; user hearing feedback for this version is pending.
+- All three captures had zero task-watchdog warnings, allocation failures,
+  speaker-I2S init failures, assertions or panic. The 900-second capture has
+  one ROM boot marker, its intentional initial reset; no runtime reboot.
+- Final four internal-free samples were 13,151 bytes, with a largest internal
+  block of 6,656 bytes and largest free DMA block of 3,200 bytes. The last PSRAM-free
+  sample was 4,582,160 bytes; internal low-water mark was 6,243 bytes. The reserved
+  speaker DMA block is separate from these free-block figures. No continuing
+  per-turn or per-reconnect decline was observed in this bounded run.
+- Two earlier long-test starts were excluded: the private controller first
+  requested settings before HTTP readiness, then hit a Python direct-network
+  routing error. It now waits for HTTP/session readiness and uses the verified
+  local curl route. Those short captures had no firmware failure markers.
+
+Raw logs and the counting-only server remain private because serial startup
+contains device/network identifiers. No microphone audio was saved or sent
+to cloud services. All observations above use the same device/network;
+ambient microphone input was not a fixed acoustic fixture.
+
+This resolves the reproduced watchdog paths within the stated test scope.
+It does not prove hours-long stability, cloud/direct-TLS behavior or enabled-
+servo load. Issue #2 and the draft PR remain open for that broader acceptance;
+the internal-memory budget is still tight. No release or merge was performed.
