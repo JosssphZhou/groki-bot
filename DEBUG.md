@@ -361,3 +361,261 @@ This resolves the reproduced watchdog paths within the stated test scope.
 It does not prove hours-long stability, cloud/direct-TLS behavior or enabled-
 servo load. Issue #2 and the draft PR remain open for that broader acceptance;
 the internal-memory budget is still tight. No release or merge was performed.
+
+## Mac mini continuation (2026-10-28)
+
+The checkout and all 58 transfer-manifest hashes matched the handoff. The
+running device still identified the `820b654` firmware. The existing local
+counting server was reused; its connection counter counts accepted WebSocket
+upgrades, while its error list only records playback-job exceptions. Neither
+an empty error list nor a single connected snapshot establishes continuity.
+An uncommanded connection-counter increment was observed before new serial
+capture began. The historical server log has no timestamps or close reasons,
+so its cause remains undetermined; no firewall change was made.
+
+### Completed local audio measurements
+
+- All four existing host regression suites passed again on the Mac mini.
+- A separate 600-second serial/counter capture had one intentional initial
+  USB reset, no later reconnect, and 9,646 additional microphone packets.
+  It had no watchdog, allocation, speaker-I2S, assertion or panic markers.
+- A subsequent independent **1,800.13-second** run completed startup, about
+  14.8 minutes of uninterrupted listening, 50 muted playback/listening turns,
+  three controlled session closes, two turns at 100% volume, and about 9.7
+  further minutes of listening. Each turn delivered 44 Opus frames; all 50
+  repeated turns resumed uplink with 24–26 packets in the observation window.
+  The three recoveries took 4.16, 4.17 and 4.17 seconds. Final audio metrics
+  reported zero evicted uplink chunks.
+- The 30-minute run had no unexpected reconnect or runtime reset, and no
+  watchdog, allocation, I2S, assertion, panic or brownout markers. Its sole
+  ROM boot marker was the deliberate initial USB reset. Transport-error logs
+  corresponded to the three explicitly requested close-code-1012 events.
+- Across 169 heap samples, internal low-water was **5,759 bytes**, lower than
+  the earlier 6,243-byte acceptance result. Pre-stress listening began and
+  ended with a five-sample median of 13,611 internal-free bytes; the final
+  listening segment began and ended with a median of 12,903. Its final five
+  samples were 12,903 / 12,903 / 12,775 / 12,903 / 12,903 bytes. Largest
+  internal and DMA blocks were 6,144 and 3,072 bytes respectively. Final
+  listening PSRAM medians were both 4,582,332 bytes. There is a step between
+  phases, but no continuing per-turn/recovery decline in this bounded run.
+- The user was away from the device. The two audible turns have protocol
+  and playback-metric evidence only; human hearing acceptance is still open.
+
+These are independent bounded runs, not a single hours-long acceptance.
+Microphone packets were counted and discarded, never saved or forwarded.
+Raw evidence and the migration receipt remain in private ignored `.scratch/`.
+
+### Enabled-servo HTTP startup failure and candidate fix
+
+After the user confirmed calibration and physical clearance, enabling the
+servos exposed a new failure before the planned servo soak could start.
+Both yaw and pitch acknowledged their startup pings and microphone uplink
+continued, but the HTTP server failed to allocate its 12,288-byte internal
+task stack (`ESP_ERR_HTTPD_TASK`). One captured boot had 21,467 internal-free
+bytes with a largest block of 8,704; a second controlled reproduction had
+21,503 free with a largest block of 9,216. Delaying the existing probe server
+did not avoid the failure; that server was resumed afterward.
+
+The servo task previously requested an 8 KiB internal stack. The candidate
+fix puts that stack in PSRAM when external task stacks are enabled, preserving
+the internal path on other configurations. Its bus-initialization failure
+uses `vTaskDeleteWithCaps`, and task-creation failure is now logged rather
+than silently ignored. There is no internal fallback after a failed PSRAM
+allocation. Scheduling, stack size, servo motion, audio parameters, watchdog
+settings and the HTTP stack size remain unchanged. The HTTP stack must stay
+internal because its handlers perform NVS/flash operations; the servo loop
+performs UART/motion work. The pinned
+[IDF 5.5.4 configuration](https://github.com/espressif/esp-idf/blob/v5.5.4/components/freertos/Kconfig#L588)
+allows external stacks on this ESP32-S3 configuration.
+
+The new host harness executes the production allocation function and bus
+failure exit. Its bounded contiguous-headroom model fails on the original
+source and passes with the change. It covers allocation success/failure and
+paired deletion across PSRAM-enabled, external-stacks-disabled and no-PSRAM
+configurations. All five host suites pass. This model does not emulate the
+full ESP-IDF allocator; the candidate still requires a firmware build and
+device validation before acceptance.
+
+HTTP could not restore the setting because its task never started. Recovery
+used the firmware's existing encrypted BLE configuration protocol, verified
+the device identity, staged only `servo-enabled=0`, and applied a deliberate
+restart. HTTP returned, the firmware remained `820b654`, volume read back
+100%, and every staged-domain setting matched the pre-servo-test snapshot.
+No flash write or NVS erase was used for this recovery. The attempted servo
+soak is **not** a completed or passing run. Formal cloud/Grok/TLS testing was
+explicitly deferred by the user. CI was not queried in this continuation;
+no push, merge, or publication has been performed.
+
+### Longer uninterrupted listening exposed PCM queue loss
+
+After BLE restoration, a separate **1,801.03-second** capture kept one
+connection after its deliberate initial reset: 29,594 uplink packets, no
+unexpected disconnect, runtime reboot, watchdog, allocation or I2S failure.
+The observed interval with confirmed uplink progress was 1,784.81 seconds
+(startup is included in the capture duration). Internal-free memory stayed
+at a five-sample median of 13,607 bytes, with a 6,483-byte low-water mark.
+PSRAM initially stayed around 4,582,364 bytes, then fell toward 4,457,340
+and partially recovered before the capture ended.
+
+A separate muted playback immediately afterward, without opening serial or
+restarting the session, exposed **221 cumulative evicted PCM chunks** in
+that same session. Each chunk is 40 ms, so about 8.84 seconds of input was
+discarded. The existing 96-slot PCM queue accounts for about 123 KiB of
+bounded occupancy; the PSRAM pattern is consistent with that backlog but
+does not by itself establish leak freedom. This run passes connection/crash
+checks but **does not pass loss-free microphone acceptance**. The earlier
+short-turn results remain valid within their recorded scope.
+
+The servo candidate built successfully on native macOS arm64 with IDF
+5.5.4: static heap headroom 127,425 bytes (floor 118,784), and the same 17
+dependency versions and partition table as the transferred build. Its
+enabled-servo acceptance was postponed to investigate the uplink loss.
+A temporary `175271e-uplink-profile` application adds one timing/queue
+summary per 100 encoded frames without changing CPU frequency, codec or
+scheduling. Only the application at 0x10000 was written and hash-verified;
+NVS, partition table and model partitions were preserved. This diagnostic
+build is not a final accepted firmware.
+
+### CPU budget comparison and a separate transport interruption
+
+The first 600.79-second timing capture had 98 complete 100-frame windows:
+mean encode time 50.85 ms and send time 5.11 ms (both include preemption).
+Eleven windows exceeded 60 ms when the existing 2 ms sender rest was added;
+queue depth reached 24 chunks, then drained. That shorter capture had no
+evictions or unexpected reconnect, illustrating why a short pass does not
+cover the earlier 30-minute loss.
+
+The next candidate increases the render rest floor from 20 to 60 ms only
+while the conversation is in its actual `Listening` state and drawing has
+already overrun the frame target. Standby uses an Idle face even while
+streaming microphone audio, so this condition reads the conversation status,
+not the face's voice state. Other render states retain their existing pacing.
+CPU frequency, codec settings, sender priority and its 2 ms rest are unchanged.
+Rate-limited PCM eviction messages are promoted from debug to warning so
+ordinary serial captures can detect data loss during uninterrupted listening.
+
+In a separate 600.52-second diagnostic comparison, mean encode time fell to
+39.73 ms; normal send windows were about 4 ms and queue depth was 0–2 chunks.
+Rendering was approximately 5 fps instead of 6 fps. However, around device
+time 391 seconds, a send took 3.007 seconds, the PCM queue hit its 96-slot
+limit, an eviction warning appeared, and the device recovered a new session.
+This was **not a passing connection test**. The final profile window's
+eviction count was zero because reconnect resets that counter; the earlier
+warning proves at least one chunk was lost and must not be hidden by the reset.
+
+The Mac mini's `.119` address belongs to Wi-Fi, while its route to the device
+uses Ethernet. The existing counting service was healthy and an active
+`caffeinate` assertion covered the interruption. This does not establish the
+network root cause. A further single-variable comparison changes only the
+device probe URL to the same server's Ethernet address `.11`; all other
+saved setting keys, 100% volume and disabled servos were verified unchanged.
+No firewall or host-interface setting was changed.
+
+The uninstrumented `175271e-audio-servo-fix` candidate has been built and
+archived privately; all five host suites pass (5.724 seconds), and static
+heap headroom remains 127,425 bytes. At this point it has not yet completed
+long hardware or enabled-servo acceptance. The private acceptance controller
+now fails on PCM eviction warnings and nonzero per-session eviction metrics,
+as well as codec failures and the prior watchdog/allocation/I2S checks.
+
+The wired-endpoint timing comparison then completed **600.76 seconds** with
+no unexpected reconnect or PCM eviction. Across 97 complete windows, mean
+encode/send times were 40.40/4.11 ms, maximum send time was 497.75 ms, and
+queue depth peaked at 13 chunks before draining. No window's mean encode +
+send + 2 ms rest exceeded 60 ms. This bounded improvement does not prove
+that the Wi-Fi-address interruption's root cause was the host interface.
+The final uninstrumented candidate was subsequently app-flashed and
+hash-verified; a separate one-hour local acceptance run is in progress.
+
+### Uninstrumented one-hour local acceptance
+
+The `175271e-audio-servo-fix` native build completed a separate
+**3,600.13-second** run on the Ethernet probe endpoint with servos disabled.
+Readiness took 18.47 seconds; the initial listening phase then continued
+without interruption until test time 2,700 seconds (about 44.7 minutes of
+confirmed continuous listening). Fifty muted turns each delivered 44 frames
+and resumed uplink with 23–26 packets in the observation window. Three
+explicit close-code-1012 events recovered in **4.16 / 3.14 / 4.16 seconds**.
+Two further turns completed at 100% volume, followed by about 9.7 minutes
+of listening. Both per-session eviction snapshots were zero, and no PCM
+eviction warning appeared anywhere in the capture.
+
+There was no unexpected reconnect, runtime reset, watchdog, allocation,
+speaker-I2S, codec, assertion, panic, event-queue overflow or brownout marker.
+The sole ROM boot marker was the deliberate initial serial reset. Transport
+errors corresponded to the three controlled closes. Across 356 heap samples,
+internal low-water was **6,323 bytes**. Before playback, first/last five-sample
+internal-free medians were both 13,631 bytes; after stress they were both
+12,923, with all 57 final-listening samples at that value. The last sample
+had a largest internal block of 6,656 and a largest DMA block of 2,816 bytes.
+PSRAM first/last medians were 4,582,336 / 4,582,380 before stress and
+4,582,336 / 4,583,652 afterward; transient queue occupancy recovered.
+No continuing decline was observed within these listening phases.
+
+The final source also passed all five host suites on macOS (5.724 seconds)
+and Linux arm64 (1.282 seconds), native IDF 5.5.4 compilation and official
+IDF 5.5.4 Docker compilation. Both maps had 127,425 bytes of static heap
+headroom above the 118,784-byte floor. The first Docker configure attempt
+lacked Node; its failure evidence was retained, and a separate retry used
+the Node installation required by the repository's release workflow. These
+are local checks, not GitHub CI. The Docker binary was not flashed; device
+evidence corresponds to the separately archived native binary and ELF.
+
+Human hearing acceptance remains open because the user is away. This is a
+bounded one-hour local result; cloud/TLS and single-run multi-hour behavior
+are not established. Enabled-servo acceptance follows separately.
+
+### Enabled-servo acceptance and final restored state
+
+The same uninstrumented native binary then completed an independent
+**2,700.20-second** enabled-servo run. Both the configuration-Apply boot and
+the capture's deliberate initial reset returned a working HTTP service;
+the yaw and pitch startup pings succeeded. Readiness took 14.41 seconds,
+followed by about 29.8 minutes of uninterrupted listening. Fifty muted turns
+each delivered 44 frames and resumed upload with 22–26 packets in the
+observation window. Three controlled closes recovered in
+**4.17 / 3.13 / 3.11 seconds**; two 100%-volume turns and about 9.7 further
+minutes of listening followed. The normal audio guard continued to pause
+servo motion during playback; it was not disabled for this test.
+
+There were no unexpected reconnects or runtime resets, PCM evictions,
+watchdog, allocation, I2S, codec, assertion, panic, event-queue overflow or
+brownout markers. Its sole ROM boot marker was the intentional initial
+capture reset. Across 267 heap samples, the pre-stress internal-free
+five-sample medians were both 13,163 bytes, and the final-listening medians
+were both 12,467 bytes. Internal low-water was **5,683 bytes**; the last
+sample's largest internal/DMA blocks were 5,632 / 3,072 bytes. PSRAM
+pre-stress medians were 4,572,544 / 4,572,588 bytes and final medians were
+4,572,576 / 4,572,572. The final five PSRAM samples were all 4,572,572 bytes.
+No continuing decline was observed within these listening phases. Captured
+servo-task stack headroom was 6,004 bytes. Internal-memory margin remains
+tight despite these passing bounded tests.
+
+After the test, HTTP Apply deliberately restarted the device with the
+saved servo master switch restored to **off**. The M5 base initializes its
+servo power rail off and does not start the servo task in that state. Final
+readback confirmed firmware `175271e-audio-servo-fix`, volume **100%**, HTTP
+availability and local microphone upload. All saved setting keys matched
+the original snapshot except the deliberately changed local probe URL
+(`.119` Wi-Fi address to `.11` Ethernet address). The original counting
+server process was retained throughout; microphone packets were discarded,
+not recorded or forwarded. NVS, partition table, model data and original
+private firmware backups were preserved. Three application-only flashes
+(two diagnostics and the final native candidate) were hash-verified.
+
+These final **one-hour and separate 45-minute** runs passed on the tested
+local Ethernet endpoint. They do not establish a single multi-hour run,
+human hearing quality, cloud/TLS behavior, or the root cause of the earlier
+Wi-Fi-address transport interruptions. The earlier failures remain part of
+the evidence; no firewall setting was changed. Formal cloud configuration
+remains deferred by the user.
+
+Hardware validation used `fix/cores3-audio-memory` at base commit `175271e`
+plus the local source changes documented here. The tested binary is identified
+by the private binary/ELF/source-hash manifest and an ignored `version.txt`
+override; a subsequent source commit does not change that firmware identity.
+The pre-existing M5Unified patch remains applied. At completion of hardware
+validation, these changes had not been committed, pushed, merged or published,
+and current GitHub CI/PR/issue state was not queried.
+The private migration receipt and each independent result are retained
+under `.scratch/handoff-mac-mini/` and `.scratch/mac-mini-investigation/`.
