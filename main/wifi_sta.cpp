@@ -24,6 +24,7 @@
 #include <wifi_config_service/wifi_config_service.hpp>
 
 #include "captive_portal.hpp"
+#include "speaker_dma_reserve.hpp"
 
 namespace stackchan::app {
 
@@ -75,6 +76,27 @@ std::atomic<int> g_ap_client_count{0};
 void sta_retry_timer_cb(void*)
 {
     esp_wifi_connect();
+}
+
+void log_heap(const char* when)
+{
+    ESP_LOGI(kTag, "%s: INT free=%u largest=%u | DMA free=%u largest=%u",
+             when,
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
+}
+
+bool log_wifi_err(esp_err_t err, const char* what)
+{
+    if (err == ESP_OK) return true;
+    ESP_LOGE(kTag, "%s failed: %s (INT free=%u largest=%u DMA largest=%u)",
+             what, esp_err_to_name(err),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
+    return false;
 }
 
 void event_handler(void* /*arg*/, esp_event_base_t base, int32_t id, void* data)
@@ -183,8 +205,9 @@ void event_handler(void* /*arg*/, esp_event_base_t base, int32_t id, void* data)
 void wifi_start(const config::DeviceConfig& cfg)
 {
     // Internal RAM left for the Wi-Fi driver. esp_wifi_init needs a 6.5 KiB contiguous internal block for its task
-    // stack plus its RX/TX buffers; when these numbers are low the boot aborts in esp_wifi_init below. Keep this
-    // line: it is the reference point for comparing boot logs from different builds and devices.
+    // stack plus its RX/TX buffers. Keep this line: it is the reference point for comparing boot logs. Failures
+    // below are logged and returned — ESP_ERROR_CHECK here reboot-looped the CoreS3 (reset reason 4) when
+    // esp_wifi_start could not allocate with the speaker DMA park still held.
     ESP_LOGI(kTag, "before Wi-Fi init: INT free=%u largest=%u | DMA free=%u largest=%u",
              static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
              static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
@@ -192,22 +215,62 @@ void wifi_start(const config::DeviceConfig& cfg)
              static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
 
     g_boot_cfg = &cfg;
-    ESP_ERROR_CHECK(esp_netif_init());
+
+    // If the speaker DMA park was shrunk or released, settle it on every
+    // exit (including set_mode / start failure) so playRaw keeps a hole.
+    // Cleared once settled so the destructor does not do it twice.
+    bool dma_touched = false;
+    bool radio_started = false;
+    struct RestoreDma {
+        bool* touched;
+        bool* started;
+        ~RestoreDma()
+        {
+            if (touched != nullptr && *touched) {
+                speaker_dma_reserve_after_radio(*started);
+                *touched = false;
+            }
+        }
+    } restore_dma{&dma_touched, &radio_started};
+    bool yielded = false;
+    auto yield_for_radio = [&]() {
+        if (yielded) return;
+        if (!speaker_dma_reserve_yield()) return;
+        yielded = true;
+        dma_touched = true;
+        log_heap("after speaker DMA yield");
+    };
+
+    if (!log_wifi_err(esp_netif_init(), "esp_netif_init")) return;
 
     static bool loop_started = false;
     if (!loop_started) {
-        ESP_ERROR_CHECK(esp_event_loop_create_default());
+        if (!log_wifi_err(esp_event_loop_create_default(), "esp_event_loop_create_default")) {
+            return;
+        }
         loop_started = true;
     }
     esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&wifi_cfg));
+    esp_err_t init_err = esp_wifi_init(&wifi_cfg);
+    if (init_err == ESP_ERR_NO_MEM) {
+        ESP_LOGW(kTag, "esp_wifi_init returned ESP_ERR_NO_MEM — yielding DMA reserve");
+        yield_for_radio();
+        init_err = esp_wifi_init(&wifi_cfg);
+    }
+    if (!log_wifi_err(init_err, "esp_wifi_init")) return;
 
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                               &event_handler, nullptr));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                               &event_handler, nullptr));
+    if (!log_wifi_err(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                                 &event_handler, nullptr),
+                      "WIFI_EVENT handler")) {
+        return;
+    }
+    if (!log_wifi_err(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                                 &event_handler, nullptr),
+                      "IP_EVENT handler")) {
+        return;
+    }
 
     if (g_sta_retry_timer == nullptr) {
         const esp_timer_create_args_t args = {
@@ -217,12 +280,25 @@ void wifi_start(const config::DeviceConfig& cfg)
             .name = "sta-retry",
             .skip_unhandled_events = true,
         };
-        ESP_ERROR_CHECK(esp_timer_create(&args, &g_sta_retry_timer));
+        if (!log_wifi_err(esp_timer_create(&args, &g_sta_retry_timer), "esp_timer_create")) {
+            return;
+        }
     }
 
     if (cfg.wifi_ssid.empty()) {
         ESP_LOGI(kTag, "no SSID configured — Wi-Fi driver initialised but not started");
         return;
+    }
+
+    // esp_wifi_init succeeds while the 4096 B speaker park is held (no-SSID
+    // boots reach ready). esp_wifi_start does not: CoreS3 with BLE already
+    // advertising returns ESP_ERR_NO_MEM. Keep 1536 B parked (two 512 B I2S
+    // buffers) and hand the rest to the driver. If that is still short,
+    // the retry below drops the rest too. The exit guard grows the park
+    // back, or takes a new hole if it was released.
+    if (speaker_dma_reserve_shrink_for_radio()) {
+        dma_touched = true;
+        log_heap("after speaker DMA shrink");
     }
 
     wifi_config_t sta_cfg{};
@@ -231,15 +307,64 @@ void wifi_start(const config::DeviceConfig& cfg)
     std::strncpy(reinterpret_cast<char*>(sta_cfg.sta.password),
                  cfg.wifi_password.c_str(), sizeof(sta_cfg.sta.password) - 1);
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    if (!log_wifi_err(esp_wifi_set_mode(WIFI_MODE_STA), "esp_wifi_set_mode")) return;
+    if (!log_wifi_err(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg), "esp_wifi_set_config")) return;
+
+    esp_err_t st = esp_wifi_start();
+    if (st == ESP_ERR_NO_MEM) {
+        ESP_LOGW(kTag,
+                 "esp_wifi_start failed with DMA park shrunk: %s (INT free=%u largest=%u DMA largest=%u)",
+                 esp_err_to_name(st),
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
+        // 1536 B still parked was not enough. Drop it and retry immediately,
+        // then once more after a short backoff. Non-NO_MEM errors are not
+        // retried: they are not the alloc failure this path exists for.
+        yield_for_radio();
+        constexpr int kYieldAttempts = 2;
+        constexpr int kBackoffMs[kYieldAttempts] = {0, 400};
+        for (int i = 0; i < kYieldAttempts && st == ESP_ERR_NO_MEM; ++i) {
+            if (kBackoffMs[i] != 0) {
+                vTaskDelay(pdMS_TO_TICKS(kBackoffMs[i]));
+            }
+            st = esp_wifi_start();
+            if (st == ESP_OK) break;
+            ESP_LOGW(kTag,
+                     "esp_wifi_start failed (try %d/%d, park released): %s (INT free=%u largest=%u DMA largest=%u)",
+                     i + 1, kYieldAttempts, esp_err_to_name(st),
+                     static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                     static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+                     static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
+            if (st != ESP_ERR_NO_MEM) break;
+        }
+    } else if (st != ESP_OK) {
+        ESP_LOGW(kTag, "esp_wifi_start failed: %s (INT free=%u largest=%u DMA largest=%u)",
+                 esp_err_to_name(st),
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
+    }
+    if (st != ESP_OK) {
+        ESP_LOGE(kTag, "esp_wifi_start failed: %s — STA left stopped, no reboot",
+                 esp_err_to_name(st));
+        return;
+    }
+    radio_started = true;
+
     // IDF defaults to WIFI_PS_MIN_MODEM: the radio naps between DTIM beacons
     // and downlink frames queue at the AP for 20-90 ms at a time (measured
     // p50=20ms / p99=72ms vs 3ms awake). That jitter eats straight into the
     // TTS jitter buffer on a device that streams 60 ms audio frames. Desk
     // robot on USB power — keep the radio awake.
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+    if (esp_err_t ps = esp_wifi_set_ps(WIFI_PS_NONE); ps != ESP_OK) {
+        ESP_LOGW(kTag, "esp_wifi_set_ps(NONE) failed: %s", esp_err_to_name(ps));
+    }
+    if (dma_touched) {
+        speaker_dma_reserve_after_radio(true);
+        dma_touched = false;
+    }
+    log_heap("after Wi-Fi start");
     ESP_LOGI(kTag, "connecting to SSID: %s (power-save off)", cfg.wifi_ssid.c_str());
 }
 
@@ -363,8 +488,15 @@ void wifi_enable_ap_mode()
     }
 
     // esp_wifi_start() is idempotent; calling it after set_mode picks up the
-    // new AP interface even when STA was already running.
+    // new AP interface even when STA was already running. If STA never
+    // started (NO_MEM), the speaker park may be held again — drop it for
+    // one retry, then put it back. Do not abort: this runs from a settings tap.
     esp_err_t st = esp_wifi_start();
+    if (st == ESP_ERR_NO_MEM && speaker_dma_reserve_yield()) {
+        ESP_LOGW(kTag, "esp_wifi_start (AP) ESP_ERR_NO_MEM — yielded DMA reserve, retrying");
+        st = esp_wifi_start();
+        speaker_dma_reserve_repark();
+    }
     if (st != ESP_OK && st != ESP_ERR_WIFI_NOT_INIT) {
         ESP_LOGW(kTag, "esp_wifi_start (AP) returned %s", esp_err_to_name(st));
     }
