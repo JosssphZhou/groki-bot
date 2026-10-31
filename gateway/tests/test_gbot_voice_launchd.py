@@ -29,6 +29,34 @@ def test_service_restarts_and_does_not_copy_credentials(tmp_path, monkeypatch):
     assert result["EnvironmentVariables"]["STACKCHAN_GBOT_VOICE_TOOLS"] == "0"
 
 
+def test_cli_proxy_configuration_survives_service_install(monkeypatch, capsysbinary):
+    monkeypatch.setenv("ACCESS_TOKEN", "must-not-be-persisted")
+    monkeypatch.setattr(installer.sys, "platform", "darwin")
+    monkeypatch.setattr(installer.shutil, "which", lambda _: "/usr/local/bin/node")
+    monkeypatch.setattr(installer.sys, "argv", [
+        "install_gbot_voice_launchd.py", "--agent-id", "agent-1", "--dry-run",
+        "--proxy-url", "http://127.0.0.1:3067",
+    ])
+    installer.main()
+    encoded = capsysbinary.readouterr().out
+    env = plistlib.loads(encoded)["EnvironmentVariables"]
+    assert env["HTTP_PROXY"] == "http://127.0.0.1:3067"
+    assert env["HTTPS_PROXY"] == "http://127.0.0.1:3067"
+    assert env["NODE_USE_ENV_PROXY"] == "1"
+    assert env["NO_PROXY"] == "localhost,127.0.0.1,::1"
+    assert b"must-not-be-persisted" not in encoded
+
+
+@pytest.mark.parametrize("proxy_url", [
+    "http://user:SECRET_FIXTURE@127.0.0.1:3067",
+    "http://127.0.0.1:3067?token=SECRET_FIXTURE",
+])
+def test_proxy_credentials_are_not_persisted(tmp_path, proxy_url):
+    with pytest.raises(ValueError, match="without credentials") as error:
+        installer.render_agent(tmp_path, tmp_path, "/usr/local/bin/node", "id", proxy_url=proxy_url)
+    assert "SECRET_FIXTURE" not in str(error.value)
+
+
 @pytest.mark.parametrize("agent_id", ["", "  ", "x\n", "x" * 201])
 def test_invalid_agent_id_rejected(tmp_path, agent_id):
     with pytest.raises(ValueError):
