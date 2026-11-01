@@ -280,7 +280,7 @@ private:
         const std::uint32_t total = tx_evicted_total_.fetch_add(1, std::memory_order_relaxed) + 1;
         const std::uint32_t now_ms = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
         if (last_evict_log_ms_ == 0 || now_ms - last_evict_log_ms_ >= kEvictLogIntervalMs) {
-            ESP_LOGD(kTag, "audio tx queue full; evicting oldest chunks (%u evicted this session)",
+            ESP_LOGW(kTag, "audio tx queue full; evicting oldest chunks (%u evicted this session)",
                      static_cast<unsigned>(total));
             last_evict_log_ms_ = now_ms;
         }
@@ -802,6 +802,10 @@ private:
                 return;
             }
             enc_accum_.erase(enc_accum_.begin(), enc_accum_.begin() + kUplinkFrameSamples);
+            // A backlogged PCM queue never blocks the sender. Leave a real
+            // scheduling gap for idle cleanup alongside rendering; yielding
+            // only to equal-priority tasks still starves IDLE1.
+            vTaskDelay(pdMS_TO_TICKS(2));
         }
     }
 

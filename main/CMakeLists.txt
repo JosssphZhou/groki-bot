@@ -56,6 +56,7 @@ set(_main_srcs
     "servo_task.cpp"
     "settings_sinks.cpp"
     "speech.cpp"
+    "speaker_dma_reserve.cpp"
     "voice_db.cpp"
     "hmm_voice.cpp"
     "wifi_sta.cpp"

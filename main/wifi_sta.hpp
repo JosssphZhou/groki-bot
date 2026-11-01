@@ -14,6 +14,9 @@ namespace stackchan::app {
 // will stay false and demo_loop will show the "Wi-Fi: 切断中" balloon.
 //
 // Returns as soon as the driver is started — connection happens asynchronously.
+// Allocation failure is logged and does not reset the device. The speaker DMA
+// park is shrunk to 1536 B across esp_wifi_start, released only if that still
+// returns ESP_ERR_NO_MEM, then grown or parked again afterwards.
 void wifi_start(const config::DeviceConfig& cfg);
 
 // True once Wi-Fi has an IP address. Becomes false again on disconnect.

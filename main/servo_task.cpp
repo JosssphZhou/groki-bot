@@ -6,9 +6,11 @@
 #include <cmath>
 #include <driver/gpio.h>
 #include <driver/uart.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/idf_additions.h>
 #include <freertos/task.h>
 
 #include "groki_motion/motion.hpp"
@@ -35,7 +37,7 @@ void servo_task_entry(void* arg)
     auto bus_result = scs_servo::ScsBus::create(args.bus_cfg);
     if (!bus_result) {
         ESP_LOGE(kTag, "ScsBus::create failed: %d", static_cast<int>(bus_result.error()));
-        vTaskDelete(nullptr);
+        vTaskDeleteWithCaps(nullptr);
         return;
     }
     auto bus = std::move(*bus_result);
@@ -247,7 +249,18 @@ void servo_task_entry(void* arg)
 
 void start_servo_task(ServoTaskArgs& args)
 {
-    xTaskCreatePinnedToCore(servo_task_entry, "servo", 8192, &args, 4, nullptr, 0);
+    // UART/motion work does not write flash. Keep this stack out of internal
+    // RAM so the HTTP task can still allocate its cache-safe 12 KiB stack
+    // when Wi-Fi and the voice session are also running.
+#if CONFIG_SPIRAM && CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM
+    constexpr UBaseType_t kCaps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#else
+    constexpr UBaseType_t kCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+#endif
+    if (xTaskCreatePinnedToCoreWithCaps(servo_task_entry, "servo", 8192, &args, 4,
+                                      nullptr, 0, kCaps) != pdPASS) {
+        ESP_LOGE(kTag, "servo task allocation failed");
+    }
 }
 
 } // namespace stackchan::app

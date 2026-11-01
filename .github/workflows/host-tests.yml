@@ -108,6 +108,9 @@ jobs:
           cmake --build build
           ctest --test-dir build --output-on-failure
 
+      - name: audio allocation and task lifetime tests
+        run: python3 -m unittest discover -s tools/tests -p 'test_*.py' -v
+
       # --- conversation: XiaoZhi control dispatch (gateway head message) --
       - name: conversation host tests (ASan + UBSan)
         working-directory: components/conversation/test/host
