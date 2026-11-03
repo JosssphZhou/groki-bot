@@ -27,6 +27,7 @@
 #include "esp_opus_dec.h"
 #include "esp_opus_enc.h"
 #include "conversation/control_dispatch.hpp"
+#include "conversation/tracking_control.hpp"
 #include "psram_allocator.hpp"
 #include "ws_extra_headers.hpp"
 
@@ -551,6 +552,7 @@ private:
         cJSON_AddStringToObject(root, "transport", "websocket");
         cJSON* features = cJSON_AddObjectToObject(root, "features");
         cJSON_AddBoolToObject(features, "mcp", false);
+        cJSON_AddBoolToObject(features, "camera_tracking_v1", config_.camera_tracking_v1);
         cJSON* ap = cJSON_AddObjectToObject(root, "audio_params");
         cJSON_AddStringToObject(ap, "format", "opus");
         cJSON_AddNumberToObject(ap, "sample_rate", kUplinkSampleRate);
@@ -630,6 +632,22 @@ private:
                     emit_text(ConversationEventType::AssistantEmotion, json_str(root, "emotion"));
                 } else if (std::strcmp(type, "led") == 0) {
                     handle_led(root);
+                } else if (std::strcmp(type, "head_tracking") == 0) {
+                    if (auto mode = parse_head_tracking_mode(root)) {
+                        ConversationEvent ev{};
+                        ev.type = ConversationEventType::HeadTrackingModeChanged;
+                        ev.head_tracking_mode = *mode;
+                        emit(ev);
+                    }
+                } else if (std::strcmp(type, "head_track") == 0) {
+                    if (config_.camera_tracking_v1) {
+                        if (auto command = parse_head_track(root)) {
+                            ConversationEvent ev{};
+                            ev.type = ConversationEventType::HeadTrack;
+                            ev.head_tracking_command = std::move(*command);
+                            emit(ev);
+                        }
+                    }
                 } else if (std::strcmp(type, "tts") == 0) {
                     handle_tts(root);
                 } else if (std::strcmp(type, "system") == 0 || std::strcmp(type, "alert") == 0) {

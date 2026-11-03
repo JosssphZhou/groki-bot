@@ -16,6 +16,12 @@ get_filename_component(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE
 find_package(Threads REQUIRED)
 enable_testing()
 
+add_executable(head_control_test test_head_control.cpp)
+target_include_directories(head_control_test PRIVATE ${REPO_ROOT}/main)
+target_compile_options(head_control_test PRIVATE -Wall -Wextra)
+target_link_libraries(head_control_test PRIVATE Threads::Threads)
+add_test(NAME head_control COMMAND head_control_test)
+
 # Compile the production service unchanged. Only the camera hardware, board
 # detection, HTTP sink registration, logging and RTOS delay are replaced.
 foreach(camera_enabled IN ITEMS 0 1)
@@ -43,5 +49,9 @@ add_test(NAME camera_disabled COMMAND camera_service_test_0 disabled)
 foreach(scenario IN ITEMS unsupported normal boot_recovery init_failure raw raw_restore_recovery
         raw_init_failure colorbar_enable_failure colorbar_disable_failure capture_failure register_failure
         register_recovery serialized_requests)
+    add_test(NAME camera_${scenario} COMMAND camera_service_test_1 ${scenario})
+endforeach()
+foreach(scenario IN ITEMS tracking_success tracking_paused tracking_pause_during tracking_failure tracking_timeout
+        tracking_feedback_failure tracking_moved tracking_no_worker tracking_no_init tracking_no_servo tracking_finalize_timeout)
     add_test(NAME camera_${scenario} COMMAND camera_service_test_1 ${scenario})
 endforeach()

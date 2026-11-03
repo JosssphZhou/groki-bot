@@ -6,6 +6,7 @@
 #include <sdkconfig.h>
 
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <mutex>
@@ -73,10 +74,92 @@ struct QuiesceGuard {
     }
 };
 
-bool capture_sink(const stackchan::wifi_config::CameraCaptureOptions& options,
-                  std::vector<std::uint8_t>& out, std::size_t& w, std::size_t& h,
-                  std::string& format)
-{
+std::uint32_t now_ms() {
+    return static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
+}
+
+std::optional<HeadControl::Result> wait_for_servo(std::optional<std::uint32_t> sequence) {
+    if (!sequence)
+        return {};
+    const auto deadline = now_ms() + 200;
+    do {
+        if (auto result = g_state->servo.result(*sequence))
+            return result;
+        vTaskDelay(pdMS_TO_TICKS(5));
+    } while (HeadControl::before(now_ms(), deadline));
+    g_state->servo.cancel(*sequence);
+    return {};
+}
+
+bool tracking_capture(std::vector<std::uint8_t>& out, std::size_t& w, std::size_t& h, std::string& format,
+                      stackchan::wifi_config::CameraCaptureMetadata& metadata) {
+    metadata.tracking_busy = true;
+    std::unique_lock lock(g_camera_mutex, std::try_to_lock);
+    if (!lock.owns_lock())
+        return false;
+    if (!g_state->servo.available() || !g_camera.initialised()) {
+        metadata.tracking_busy = false;
+        return false;
+    }
+    const auto prepare_request = g_state->servo.submit(HeadControl::Operation::Prepare, now_ms());
+    if (!prepare_request)
+        return false;
+    auto prepared = wait_for_servo(prepare_request);
+    if (!prepared || !prepared->ok) {
+        metadata.tracking_busy = prepared && !prepared->unavailable;
+        return false;
+    }
+    struct Reservation {
+        std::string id;
+        ~Reservation() {
+            if (!id.empty())
+                g_state->servo.abandon_frame(id);
+        }
+    } reservation{prepared->frame_id};
+    const auto deadline = now_ms() + 500;
+    QuiesceGuard quiesce;
+    metadata.tracking_busy = false;
+    for (int i = 0; i < 2; ++i) {
+        if (!HeadControl::before(now_ms(), deadline))
+            return false;
+        auto discarded = g_camera.capture();
+        if (!discarded || !HeadControl::before(now_ms(), deadline))
+            return false;
+    }
+    if (!HeadControl::before(now_ms(), deadline))
+        return false;
+    auto frame = g_camera.capture();
+    const auto captured_at = now_ms();
+    if (!frame || !HeadControl::before(captured_at, deadline))
+        return false;
+    const auto finalize_request =
+        g_state->servo.submit(HeadControl::Operation::Finalize, now_ms(), prepared->frame_id, {}, false, captured_at);
+    if (!finalize_request) {
+        metadata.tracking_busy = true;
+        return false;
+    }
+    auto finalized = wait_for_servo(finalize_request);
+    if (!finalized || !finalized->ok) {
+        metadata.tracking_busy = finalized && !finalized->unavailable;
+        return false;
+    }
+    out.assign(frame->data(), frame->data() + frame->size());
+    w = frame->width();
+    h = frame->height();
+    format = "rgb565be";
+    metadata.frame_id = finalized->frame_id;
+    reservation.id.clear();
+    return true;
+}
+
+bool capture_sink(const stackchan::wifi_config::CameraCaptureOptions& options, std::vector<std::uint8_t>& out,
+                  std::size_t& w, std::size_t& h, std::string& format,
+                  stackchan::wifi_config::CameraCaptureMetadata& metadata) {
+    if (options.tracking) {
+        if (options.raw_bayer || options.colorbar)
+            return false;
+        return tracking_capture(out, w, h, format, metadata);
+    }
     std::lock_guard<std::mutex> lock(g_camera_mutex);
     // Discard two frames after the quiesce drain so the one we keep was
     // composed entirely under quiesce.
@@ -219,6 +302,7 @@ void register_sinks(SharedState& state)
         return; // has_camera stays false — web UI hides the section
     }
     g_state = &state;
+    state.servo.camera_available.store(true);
     stackchan::wifi_config::set_camera_capture_sink(&capture_sink);
     stackchan::wifi_config::set_camera_reg_sink(&reg_sink);
 }
