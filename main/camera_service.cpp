@@ -8,6 +8,7 @@
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <mutex>
 
 #include <wifi_config_service/wifi_config_service.hpp>
 
@@ -26,23 +27,44 @@ constexpr const char* kTag = "stackchan";
 // Resident camera (M5Base only). See init_resident() in the header for the
 // full lifetime rationale.
 stackchan::board::CameraGc0308 g_camera;
+bool g_supported = false;
+std::mutex g_camera_mutex;
 
 // SharedState reference for the quiesce flag; set by register_sinks.
 SharedState* g_state = nullptr;
 
-// Quiesce the PSRAM-heavy tasks (render sprite traffic) and the In_I2C
-// pollers for the duration of a camera session. The sensor streams
-// continuously, so frames completed BEFORE the bus went quiet may be torn
-// by concurrent PSRAM traffic — confirmed on hardware as bands of corrupt
-// pixels. The quiesce also covers all runtime SCCB traffic (colorbar / RAW
-// re-init / register pokes): SCCB shares GPIO12/11 with In_I2C, so the
-// pollers must be parked first.
+using stackchan::board::CameraFrameSize;
+using stackchan::board::CameraPixelFormat;
+
+// Keep ordinary snapshots small enough to coexist with audio and Wi-Fi.
+// RAW needs VGA to preserve the sensor's Bayer mosaic.
+constexpr CameraFrameSize kPhotoSize = CameraFrameSize::Qvga;
+
+bool begin_with_retry(CameraPixelFormat format, CameraFrameSize size)
+{
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        auto result = g_camera.begin(format, size);
+        if (result) {
+            return true;
+        }
+        if (attempt == 4) {
+            ESP_LOGE(kTag, "camera init failed: %d", static_cast<int>(result.error()));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+    }
+    return false;
+}
+
+// Pause the PSRAM-heavy render and polling loops while acquiring frames.
+// This delay lets typical in-flight iterations drain; bus exclusion is
+// provided by M5Unified's transaction mutex, not by this flag or delay.
 struct QuiesceGuard {
     QuiesceGuard()
     {
         g_state->i2c_quiesce.store(true, std::memory_order_release);
         // demo_loop polls every ~50 ms, led_task every 100 ms, render every
-        // 33 ms — 150 ms guarantees all of them observed the flag.
+        // 33 ms — allow typical iterations to observe the pause.
         vTaskDelay(pdMS_TO_TICKS(150));
     }
     ~QuiesceGuard()
@@ -55,48 +77,29 @@ bool capture_sink(const stackchan::wifi_config::CameraCaptureOptions& options,
                   std::vector<std::uint8_t>& out, std::size_t& w, std::size_t& h,
                   std::string& format)
 {
-    using stackchan::board::CameraFrameSize;
-    using stackchan::board::CameraPixelFormat;
-    // Resident camera (g_camera, initialised at boot). Boot-time init
-    // failure leaves it uninitialised — report unavailable.
-    if (!g_camera.initialised()) {
-        return false;
-    }
+    std::lock_guard<std::mutex> lock(g_camera_mutex);
     // Discard two frames after the quiesce drain so the one we keep was
     // composed entirely under quiesce.
     QuiesceGuard quiesce;
 
+    if (!g_camera.initialised() && !begin_with_retry(CameraPixelFormat::Rgb565, kPhotoSize)) {
+        return false;
+    }
+
     // RAW Bayer: the DVP path is 1 B/px vs the resident RGB565's 2 B/px, so
     // this needs a driver re-init, not just a sensor register flip. Deinit →
     // BayerRaw init → grab → restore RGB565. The swap reuses the
-    // internal-RAM blocks the resident driver just freed (same allocation
-    // pattern), so it works at steady state where a cold init would not —
-    // but a restore failure leaves the camera down until reboot, so both
-    // steps log loudly.
+    // internal-RAM blocks released by the resident driver. Allocation may
+    // still fail at steady state; the next request retries a failed restore.
     if (options.raw_bayer) {
         // Format switches contend with other tasks (conversation, WebSocket)
         // for fragmented internal RAM — begin() can lose the allocation race
         // (it detects this and fails loudly), so every (re)init below
         // retries a few times.
-        auto begin_with_retry = [](CameraPixelFormat fmt, const char* what) -> bool {
-            for (int attempt = 0; attempt < 5; ++attempt) {
-                auto r = g_camera.begin(fmt, CameraFrameSize::Vga);
-                if (r) {
-                    return true;
-                }
-                if (attempt == 4) {
-                    ESP_LOGE(kTag, "%s init failed: %d", what,
-                             static_cast<int>(r.error()));
-                } else {
-                    vTaskDelay(pdMS_TO_TICKS(200));
-                }
-            }
-            return false;
-        };
         (void)g_camera.end();
-        if (!begin_with_retry(CameraPixelFormat::BayerRaw, "RAW")) {
+        if (!begin_with_retry(CameraPixelFormat::BayerRaw, CameraFrameSize::Vga)) {
             ESP_LOGE(kTag, "restoring RGB565 after RAW init failure");
-            (void)begin_with_retry(CameraPixelFormat::Rgb565, "RGB565 fallback");
+            (void)begin_with_retry(CameraPixelFormat::Rgb565, kPhotoSize);
             return false;
         }
         bool ok = false;
@@ -117,8 +120,8 @@ bool capture_sink(const stackchan::wifi_config::CameraCaptureOptions& options,
             }
         }
         (void)g_camera.end();
-        if (!begin_with_retry(CameraPixelFormat::Rgb565, "RGB565 restore")) {
-            ESP_LOGE(kTag, "camera down until reboot");
+        if (!begin_with_retry(CameraPixelFormat::Rgb565, kPhotoSize)) {
+            ESP_LOGE(kTag, "RGB565 restore failed; next request will retry");
         }
         return ok;
     }
@@ -127,7 +130,14 @@ bool capture_sink(const stackchan::wifi_config::CameraCaptureOptions& options,
     // the transfer path. Same RGB565 pipeline, the sensor just substitutes
     // its generator for the array.
     if (options.colorbar) {
-        (void)g_camera.set_colorbar(true);
+        if (!g_camera.set_colorbar(true)) {
+            // A failed write may still have reached the sensor. Reset on a
+            // cleanup failure so a later photo cannot silently be a test pattern.
+            if (!g_camera.set_colorbar(false)) {
+                (void)g_camera.end();
+            }
+            return false;
+        }
     }
     format = "rgb565be";
     for (int i = 0; i < 2; ++i) {
@@ -143,11 +153,17 @@ bool capture_sink(const stackchan::wifi_config::CameraCaptureOptions& options,
         frame = g_camera.capture();
     }
     if (options.colorbar) {
-        (void)g_camera.set_colorbar(false);
+        if (!g_camera.set_colorbar(false)) {
+            // Return the held driver buffer before tearing its owner down.
+            frame = tl::unexpected{stackchan::board::CameraError::SensorAccess};
+            (void)g_camera.end();
+            return false;
+        }
     }
     if (!frame) {
         ESP_LOGE(kTag, "camera capture failed: %d",
                  static_cast<int>(frame.error()));
+        (void)g_camera.end();
         return false;
     }
     out.assign(frame->data(), frame->data() + frame->size());
@@ -156,19 +172,25 @@ bool capture_sink(const stackchan::wifi_config::CameraCaptureOptions& options,
     return true;
 }
 
-// Raw register access for interactive colour tuning. Same quiesce rule as
-// capture: SCCB may only run while the In_I2C pollers are parked.
+// Raw register access shares the capture lock so RAW mode changes cannot
+// interleave with a register page selection.
 bool reg_sink(bool write, std::uint8_t page, std::uint8_t reg, std::uint8_t& value)
 {
-    if (!g_camera.initialised()) {
+    std::lock_guard<std::mutex> lock(g_camera_mutex);
+    QuiesceGuard quiesce;
+    if (!g_camera.initialised() && !begin_with_retry(CameraPixelFormat::Rgb565, kPhotoSize)) {
         return false;
     }
-    QuiesceGuard quiesce;
     if (write) {
-        return static_cast<bool>(g_camera.write_reg(page, reg, value));
+        if (g_camera.write_reg(page, reg, value)) {
+            return true;
+        }
+        (void)g_camera.end();
+        return false;
     }
     auto r = g_camera.read_reg(page, reg);
     if (!r) {
+        (void)g_camera.end();
         return false;
     }
     value = *r;
@@ -179,25 +201,21 @@ bool reg_sink(bool write, std::uint8_t page, std::uint8_t reg, std::uint8_t& val
 
 void init_resident(stackchan::board::Board& board)
 {
-    // VGA (full sensor): the fb size is fixed at esp_camera_init time, so
-    // the resolution is a boot-time choice — 600 KiB PSRAM fb + ~4× the
-    // QVGA streaming bounce bandwidth, in exchange for full-resolution
-    // photos and (crucially) an intact Bayer mosaic for the RAW capture
-    // path, which the QVGA subsampling would scramble.
-    if (!stackchan::board::profile_for(board.kind()).has_camera) {
+    g_supported = stackchan::board::profile_for(board.kind()).has_camera;
+    if (!g_supported) {
         return;
     }
     if (auto r = g_camera.begin(stackchan::board::CameraPixelFormat::Rgb565,
-                                stackchan::board::CameraFrameSize::Vga);
+                                kPhotoSize);
         !r) {
-        ESP_LOGW(kTag, "resident camera init failed: %d — photo capture disabled",
+        ESP_LOGW(kTag, "resident camera init failed: %d — capture requests will retry",
                  static_cast<int>(r.error()));
     }
 }
 
 void register_sinks(SharedState& state)
 {
-    if (!g_camera.initialised()) {
+    if (!g_supported) {
         return; // has_camera stays false — web UI hides the section
     }
     g_state = &state;
