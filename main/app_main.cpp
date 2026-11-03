@@ -258,6 +258,14 @@ extern "C" void app_main()
         }
     }
     static stackchan::config::DeviceConfig cfg = stackchan::config::load();
+#if !CONFIG_STACKCHAN_ASR_ENABLED
+    // Preserve local-only behavior when upgrading an ASR device to a build
+    // without WakeNet. Leave NVS unchanged so switching back restores ASR.
+    if (cfg.operation_mode == stackchan::config::OperationMode::AsrLocal) {
+        cfg.operation_mode = stackchan::config::OperationMode::MicLipSync;
+        ESP_LOGW(kTag, "local ASR unavailable in this build; using microphone lip-sync");
+    }
+#endif
 
 #if defined(CONFIG_STACKCHAN_ESPNOW_POC)
     // [ESP-NOW PoC] 通常起動をスキップし、M5Stack 公式 Stack-chan 互換の ESP-NOW
@@ -284,8 +292,7 @@ extern "C" void app_main()
 #endif
 
     // Resident camera init (M5Base only; no-op elsewhere / slim builds).
-    // Must run after the i2c dump (which uses In_I2C) and before any task
-    // that touches In_I2C starts — see camera_service::init_resident.
+    // Reserve DMA memory before audio/network tasks fragment internal RAM.
     // Skipped in ASR mode (frees internal/DMA RAM for esp-sr AFE).
     if (!asr_mode) {
         stackchan::app::camera_service::init_resident(board);
@@ -685,8 +692,8 @@ extern "C" void app_main()
     // (run_demo_loop 直前) まで遅延する — 下記 defer_voice_load を参照。
     // アップロード sink は register_avatar_bytecode_sinks 内で登録済み。
 
-    // Camera capture / register sinks (no-op when the resident camera did
-    // not come up; /api/status's has_camera derives from this registration).
+    // Register camera capability; requests retry a failed resident init.
+    // Unsupported boards keep /api/status's has_camera=false.
     stackchan::app::camera_service::register_sinks(*g_state);
 
     // /mcp/* channel sinks + the settings-page test-speak buttons.

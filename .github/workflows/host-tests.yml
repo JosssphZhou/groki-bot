@@ -28,9 +28,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # tl_expected is a submodule the tests include (<tl/expected.hpp>).
-          # M5GFX / M5Unified are NOT needed — avatar_vm host tests use the
-          # in-repo WASM shim (wasm/shim/M5GFX.h) instead.
+          # Camera tests exercise the pinned M5GFX I2C error paths; other
+          # host suites also include tl_expected from its submodule.
           submodules: 'recursive'
 
       - name: Install build tooling
@@ -42,6 +41,17 @@ jobs:
         run: |
           cmake --version | head -1
           g++ --version | head -1
+
+      - name: Camera driver and service host tests (ASan + UBSan)
+        run: |
+          set -euo pipefail
+          tools/apply-m5-patches.sh
+          for suite in components/board/test/host main/test/host; do
+            cmake -S "$suite" -B "$suite/build-san" -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+              -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
+            cmake --build "$suite/build-san"
+            ctest --test-dir "$suite/build-san" --output-on-failure
+          done
 
       # --- avatar_vm: bytecode decoder + VM interpreter + fuzz -------------
       # Built twice: once plain (fast, exhaustive) and once under
