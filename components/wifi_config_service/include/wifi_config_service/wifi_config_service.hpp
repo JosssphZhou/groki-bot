@@ -169,10 +169,15 @@ void set_hmm_voice_status_getter(HmmVoiceStatusGetter getter);
 struct CameraCaptureOptions {
     bool raw_bayer = false;
     bool colorbar = false;
+    bool tracking = false;
+};
+struct CameraCaptureMetadata {
+    std::string frame_id;
+    bool tracking_busy = false;
 };
 using CameraCaptureSink =
-    std::function<bool(const CameraCaptureOptions& options, std::vector<std::uint8_t>& out,
-                       std::size_t& width, std::size_t& height, std::string& format)>;
+    std::function<bool(const CameraCaptureOptions& options, std::vector<std::uint8_t>& out, std::size_t& width,
+                       std::size_t& height, std::string& format, CameraCaptureMetadata& metadata)>;
 void set_camera_capture_sink(CameraCaptureSink sink);
 
 // Raw sensor-register access for `GET/POST /api/camera/reg` — interactive

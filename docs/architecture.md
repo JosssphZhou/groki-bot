@@ -101,9 +101,27 @@ A wrong token is rejected with HTTP 401 (`ESP32 auth rejected` in the gateway lo
 | `GET /debug/panel` | The same status as a web page |
 | `POST /capture` | Photo upload from firmware that has a camera tool (needs `Authorization: Bearer` with `VISION_TOKEN` or `STACKCHAN_TOKEN`). Not used by the Groki Bot firmware. |
 | `POST /debug/inject-text` | Inject a text turn into the live session, token protected |
-| `POST /track` | Face positions from the Mac face tracker (see Face tracking below) |
+| `POST /track` | Face positions in explicit `STACKCHAN_FACE_TRACKER_SOURCE=mac` mode; robot mode returns 409 |
 
-**Face tracking.** On a Mac with a camera, the gateway starts [tools/vision-tracker](../tools/vision-tracker/README.md) (`groki-vision-tracker --endpoint http://127.0.0.1:8766/track --fps 8`) and restarts it if it exits. The tracker finds the most confident face in each frame with Apple Vision and posts `{"x", "y", "width", "height", "confidence", "timestamp"}` (0..1 image coordinates) at most 8 times a second. `TrackingBridge` maps the position to head angles, smooths them, and sends them at up to 50 Hz as the XiaoZhi control message `{"type": "head", "yaw": <-90..90>, "pitch": <0..60>, "speed": <100..1000>}`, because the Groki Bot firmware has no MCP. The firmware clamps the angles to its servo limits and, while the robot is speaking, keeps only the last command and applies it when the reply ends. The gateway sends no head moves while the robot speaks or listens after the wake word; "look at me" / "stop looking at me" (`self.tracking.start` / `self.tracking.stop`) switch following on and off. `/debug/status` shows the state under `face_tracking`. Setup: [gateway README, Face tracking](../gateway/README.md#face-tracking).
+**Face tracking.** By default the gateway obtains 320×240 RGB565BE frames from the connected CoreS3 at 1 Hz and feeds them to the local Swift/Apple Vision worker over stdin. Frames remain in memory. Firmware advertises `camera_tracking_v1`; `GET /api/camera/capture?tracking=1` returns an `X-Frame-Id`, and the gateway sends a single `head_track` correction using that token. The servo task validates measured pose, command revision, connection, expiry, and motion limits before applying a relative correction. `head_tracking` selects `tracking`, `conversation`, or `off`; actual wake/conversation activity pauses both automatic tracking and idle poses. No-face results release the capture reservation. Older firmware reports tracking unsupported. `STACKCHAN_FACE_TRACKER_SOURCE=mac` explicitly retains webcam detection, `/track`, and the older absolute-angle controller; there is no automatic webcam fallback. Setup and diagnostics: [gateway README](../gateway/README.md#face-tracking).
+
+The robot-camera protocol uses these additional interfaces:
+
+| Interface | Contract |
+|---|---|
+| Device hello | `features.camera_tracking_v1=true` only when camera and servo tracking are available |
+| Device HTTP capture | `GET /api/camera/capture?tracking=1`, existing settings Basic Auth, 320×240 `rgb565be`, 153,600 bytes, opaque `X-Frame-Id`; 409 for paused/moving/busy, 503 for capture or feedback failure |
+| Gateway → device mode | `{"type":"head_tracking","mode":"tracking"}`; `conversation` invalidates pending frames and freezes automatic idle/tracking motion; `off` restores ordinary idle behavior |
+| Gateway → device correction | `{"type":"head_track","frame_id":"…","delta_yaw":2,"delta_pitch":1}`; at most one correction per token, bounded to ±6° yaw/±4° pitch and configured servo limits |
+| Gateway → device no-face release | `{"type":"head_track","frame_id":"…","release":true}`; releases the reservation without moving |
+
+The gateway discards results older than one second; firmware tokens expire
+after two seconds and are invalidated by manual commands, mode changes, or
+disconnects. Commands are best effort, without a physical-motion acknowledgment.
+Only the servo task reads servo feedback. Tracking capture has a 500 ms useful
+work budget checked between driver operations; a blocked camera driver call
+can still take four seconds before cleanup. The gateway waits for that request
+to finish or time out, then backs off rather than accumulating captures.
 
 **MCP.** `uv run stackchan-mcp` is a stdio MCP server and, in the same process, the WebSocket and HTTP servers above. Claude Code or Claude Desktop can start it (the gateway runs while the client is open), or `scripts/run_stackchan_gateway_launchd.sh` keeps it running as a background service. With the Groki Bot firmware, `speak` and `get_status` work; hardware tools return an error because of `features.mcp=false`.
 

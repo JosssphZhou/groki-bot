@@ -287,7 +287,30 @@ public:
         } else {
             client_ = std::make_unique<conv::OpenAiRealtimeClient>(api_key_);
         }
-        client_->set_event_callback([this](const conv::ConversationEvent& ev) { enqueue_event(ev); });
+        client_->set_event_callback([this](const conv::ConversationEvent& ev) {
+            // Control permission changes must not wait behind streamed audio.
+            if (ev.type == conv::ConversationEventType::HeadTrackingModeChanged) {
+                const auto mode = ev.head_tracking_mode == conv::HeadTrackingMode::Tracking ? TrackingMode::Tracking
+                                  : ev.head_tracking_mode == conv::HeadTrackingMode::Conversation
+                                      ? TrackingMode::Conversation
+                                      : TrackingMode::Off;
+                state_.servo.set_tracking_mode(mode);
+                return;
+            }
+            if (ev.type == conv::ConversationEventType::HeadTrack) {
+                const auto& command = ev.head_tracking_command;
+                (void)state_.servo.submit(HeadControl::Operation::Apply, now_ms(), command.frame_id,
+                                          {command.delta_yaw, command.delta_pitch}, command.release);
+                return;
+            }
+            if (ev.type == conv::ConversationEventType::HeadPose)
+                state_.servo.preempt_tracking(now_ms());
+            if (ev.type == conv::ConversationEventType::StateChanged &&
+                (ev.state == conv::ConversationState::Error || ev.state == conv::ConversationState::Idle ||
+                 ev.state == conv::ConversationState::Connecting))
+                state_.servo.disconnect_tracking();
+            enqueue_event(ev);
+        });
 
         (void)connect_with_retries("initial connect", /*allow_audio_abort=*/false);
 
@@ -306,6 +329,7 @@ public:
                     M5.Mic.end();
                     M5.Speaker.end();
                     state_.face.mouth_open.store(0.0f, std::memory_order_relaxed);
+                    state_.servo.disconnect_tracking();
                     client_->stop();
                     vTaskDelay(pdMS_TO_TICKS(500));
                     flush_events();
@@ -383,6 +407,7 @@ private:
         cfg.instructions = system_prompt_.empty() ? kInstructions : system_prompt_;
         // Extra HTTP headers (e.g. Cloudflare Access token) for the WS upgrade.
         cfg.extra_headers = extra_headers_;
+        cfg.camera_tracking_v1 = state_.servo.supports_tracking();
         if (provider_ == config::Provider::Gemini) {
             // Gemini Live model + voice. The model is namespaced as
             // "models/..."; the client prepends that for us when missing.
@@ -515,6 +540,7 @@ private:
             vTaskDelay(kI2sSettle);
         }
         state_.face.mouth_open.store(0.0f, std::memory_order_relaxed);
+        state_.servo.disconnect_tracking();
         client_->stop();
         // The shutdown fires WEBSOCKET_EVENT_DISCONNECTED (and sometimes a
         // trailing ERROR) which the trampoline turns into transport-error
@@ -1063,6 +1089,9 @@ private:
             if (auto ready = head_commands_.receive(head, local_ == Local::Speaking)) apply_head(*ready);
             break;
         }
+        case conv::ConversationEventType::HeadTrackingModeChanged:
+        case conv::ConversationEventType::HeadTrack:
+            break; // Handled directly by the transport callback.
 
         case conv::ConversationEventType::LedColor: {
             const auto solid = led_runtime::from_rgb(ev.led_r, ev.led_g, ev.led_b);
@@ -1085,10 +1114,7 @@ private:
     // pose before the next command arrives.
     void apply_head(const conv::HeadCommand& head)
     {
-        state_.servo.speed_override.store(head.speed, std::memory_order_relaxed);
-        state_.servo.target_yaw_deg.store(head.yaw, std::memory_order_relaxed);
-        state_.servo.target_pitch_deg.store(head.pitch, std::memory_order_relaxed);
-        state_.servo.head_hold_until_ms.store(now_ms() + 2000, std::memory_order_relaxed);
+        state_.servo.set_target({head.yaw, head.pitch}, head.speed, HeadSource::Manual, now_ms());
     }
 
     // ---- tool dispatch -----------------------------------------------------
@@ -1252,8 +1278,7 @@ private:
         if (cJSON_IsNumber(yaw) && cJSON_IsNumber(pitch)) {
             const float yaw_deg = std::clamp(static_cast<float>(yaw->valuedouble), -40.0f, 40.0f);
             const float pitch_deg = std::clamp(static_cast<float>(pitch->valuedouble), -10.0f, 25.0f);
-            state_.servo.target_yaw_deg.store(yaw_deg, std::memory_order_relaxed);
-            state_.servo.target_pitch_deg.store(pitch_deg, std::memory_order_relaxed);
+            state_.servo.set_target({yaw_deg, pitch_deg}, 0, HeadSource::Manual, now_ms());
             result = R"({"ok":true})";
         } else {
             result = R"({"ok":false,"error":"yaw_deg and pitch_deg required"})";

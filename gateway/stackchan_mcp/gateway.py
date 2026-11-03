@@ -12,6 +12,7 @@ import inspect
 import logging
 import os
 import time
+from contextlib import suppress
 
 from aiohttp import web
 from aiohttp.web_log import AccessLogger
@@ -30,6 +31,7 @@ from .idle_gate import IdleGate
 from .mac_control import resolve_claude_bin
 from .touch_bridge import TouchEventBridge
 from .tracking_bridge import TrackingBridge
+from .robot_camera_tracker import RobotCameraTracker
 from .tts import synthesize_and_send
 from .usb_transport import UsbTransport
 from .voice_input_bridge import VoiceInputBridge
@@ -89,6 +91,15 @@ class Gateway:
     """
 
     def __init__(self):
+        self.tracking_source = os.getenv("STACKCHAN_FACE_TRACKER_SOURCE", "robot").strip().lower()
+        if self.tracking_source not in {"robot", "mac"}:
+            raise ValueError("STACKCHAN_FACE_TRACKER_SOURCE must be robot or mac")
+        self._proxy_activity: tuple[object, bool] | None = None
+        self._tracking_mode_lock = asyncio.Lock()
+        self._sent_tracking_mode: tuple[object, str] | None = None
+        self._tracking_mode_error_reported = False
+        self._tracking_sync_task: asyncio.Task | None = None
+        self._stopping = False
         self.voice_input_bridge = VoiceInputBridge()
         # USB Serial/JTAG transport for low-latency control traffic.
         # Initialised before esp32 so the voice backend factory can hand it
@@ -133,25 +144,30 @@ class Gateway:
         )
         self.tracking_bridge = TrackingBridge(
             self.esp32,
+            source=self.tracking_source,
             usb_transport=self.usb_transport,
             on_face_detected=self._notify_face_detected,
             on_auto_head_command=self.idle_gate.notify_auto_head_command,
             # The head holds still while the robot speaks or listens.
             is_tts_active=lambda: get_debug_status().tts_active,
-            is_listening=lambda: bool(getattr(
-                getattr(self._active_voice_proxy(), "_wake_gate", None), "is_listening", False,
-            )),
+            is_listening=self._is_listening,
         )
         # The face tracker runs as long as the gateway does; head follow is on
         # by default and "look at me" / "stop looking" toggle it.
         self.tracking_bridge.enabled = head_follow_default_enabled()
-        self.face_tracker = FaceTrackerSupervisor()
+        self.face_tracker = (
+            RobotCameraTracker(self.esp32, on_detection=self._handle_robot_detection,
+                               tracking_allowed=self._robot_tracking_allowed)
+            if self.tracking_source == "robot" else FaceTrackerSupervisor()
+        )
         self._last_face_at: float | None = None
         self.esp32.on_activity = self.idle_behavior.notify_activity
         self.esp32.on_head_command = self.idle_gate.notify_head_command
         self.esp32.on_device_state = self.idle_gate.notify_device_state
         self.esp32.on_wake_detected = self._run_wake_response
         self.esp32.on_end_conversation = self._handle_end_conversation
+        self.esp32.on_connection_changed = self._tracking_connection_changed
+        self.esp32.on_tts_changed = self._tracking_tts_changed
         self._running = False
         self._http_runner: web.AppRunner | None = None
 
@@ -162,16 +178,104 @@ class Gateway:
 
     def face_tracking_status(self) -> dict:
         """The "face_tracking" section of /debug/status."""
-        return {
+        status = {
+            "source": self.tracking_source,
             "tracker_running": self.face_tracker.running,
             "tracker_pid": self.face_tracker.pid,
-            "face_reported": self.face_tracker.available,
+            "face_reported": (self.face_tracker.face_reported if self.tracking_source == "robot"
+                              else self.face_tracker.available),
             "last_face_at": self._last_face_at,
             "head_follow": self.tracking_bridge.enabled,
             # idle: following; working: the robot is speaking; quiet: it is
             # listening after the wake word. The head holds still in both.
             "mode": self.tracking_bridge.mode,
         }
+        if self.tracking_source == "robot":
+            status.update(self.face_tracker.status())
+            status["pause_reason"] = (
+                "unsupported_voice_backend" if self.voice_backend == "xiaozhi" else
+                "conversation" if self._conversation_active() else
+                "head_follow_disabled" if not self.tracking_bridge.enabled else None
+            )
+        return status
+
+    def _is_listening(self) -> bool:
+        proxy = self._active_voice_proxy()
+        return bool(getattr(proxy, "is_listening", getattr(getattr(proxy, "_wake_gate", None), "is_listening", False)))
+
+    def _conversation_active(self) -> bool:
+        proxy = self._active_voice_proxy()
+        if hasattr(proxy, "conversation_active"):
+            active = bool(proxy.conversation_active)
+        else:
+            active = (self._proxy_activity[1] if self._proxy_activity is not None and self._proxy_activity[0] is proxy
+                      else self._is_listening())
+        return active or get_debug_status().tts_active
+
+    def _desired_tracking_mode(self) -> str:
+        if self.tracking_source != "robot" or self._stopping or self.voice_backend == "xiaozhi":
+            return "off"
+        if self._conversation_active():
+            return "conversation"
+        return "tracking" if self.tracking_bridge.enabled else "off"
+
+    def _robot_tracking_allowed(self) -> bool:
+        connection = self.esp32.connection
+        return (self._desired_tracking_mode() == "tracking" and connection is not None
+                and connection.connected and getattr(connection, "camera_tracking_v1", False)
+                and self._sent_tracking_mode == (connection, "tracking"))
+
+    async def _handle_robot_detection(self, face, context) -> None:
+        if self._robot_tracking_allowed():
+            await self.tracking_bridge.handle_robot_detection(face, context)
+
+    async def _tracking_connection_changed(self) -> None:
+        self._sent_tracking_mode = None
+        self._proxy_activity = None
+        if self.tracking_source == "robot":
+            await self.face_tracker.invalidate()
+            await self._sync_tracking_mode()
+
+    async def _tracking_tts_changed(self, connection) -> None:
+        if self.esp32.connection is connection:
+            await self._sync_tracking_mode(require_delivery=get_debug_status().tts_active)
+
+    async def _on_conversation_activity(self, proxy, active: bool) -> None:
+        if self._active_voice_proxy() is not proxy:
+            return
+        self._proxy_activity = (proxy, active)
+        await self._sync_tracking_mode(require_delivery=active)
+
+    async def _sync_tracking_mode(self, *, require_delivery: bool = False) -> None:
+        if self.tracking_source != "robot":
+            return
+        async with self._tracking_mode_lock:
+            connection = self.esp32.connection
+            if connection is None or not connection.connected or not getattr(connection, "camera_tracking_v1", False):
+                self._sent_tracking_mode = None
+                return
+            mode = self._desired_tracking_mode()
+            if self._sent_tracking_mode == (connection, mode):
+                return
+            self._sent_tracking_mode = None
+            await self.face_tracker.invalidate()
+            try:
+                await connection.send_head_tracking(mode)
+            except (ConnectionError, OSError, asyncio.TimeoutError) as exc:
+                if not self._tracking_mode_error_reported:
+                    logger.warning("Head tracking mode could not be sent; camera tracking paused")
+                    self._tracking_mode_error_reported = True
+                if require_delivery:
+                    raise ConnectionError("Could not pause automatic head motion") from exc
+                return
+            if self.esp32.connection is connection and self._desired_tracking_mode() == mode:
+                self._sent_tracking_mode = (connection, mode)
+                self._tracking_mode_error_reported = False
+
+    async def _tracking_sync_loop(self) -> None:
+        while True:
+            await self._sync_tracking_mode()
+            await asyncio.sleep(0.25)
 
     def _active_voice_proxy(self):
         connection = getattr(self.esp32, "connection", None)
@@ -183,11 +287,15 @@ class Gateway:
 
     async def start_face_tracking(self) -> dict:
         """Turn head follow on ("look at me"). The face tracker keeps running either way."""
-        return self._set_head_follow(True)
+        result = self._set_head_follow(True)
+        await self._sync_tracking_mode()
+        return result
 
     async def stop_face_tracking(self) -> dict:
         """Turn head follow off ("stop looking"). Face detection keeps running."""
-        return self._set_head_follow(False)
+        result = self._set_head_follow(False)
+        await self._sync_tracking_mode()
+        return result
 
     def _set_head_follow(self, enabled: bool) -> dict:
         self.tracking_bridge.enabled = enabled
@@ -198,6 +306,8 @@ class Gateway:
         }
         if enabled and not self.face_tracker.running:
             result["warning"] = "face tracker is not running; head will not follow"
+        if self.tracking_source == "robot" and self.voice_backend == "xiaozhi":
+            result["warning"] = "Robot camera tracking requires the Gemini or Grok-login gateway backend"
         return result
 
     async def _handle_external_local_tool(self, name: str, arguments: dict) -> dict:
@@ -257,28 +367,32 @@ class Gateway:
         backend = self.voice_backend
         if backend in {"gemini", "gbot"}:
             proxy_class = GbotVoiceProxy if backend == "gbot" else GeminiVoiceProxy
-            return proxy_class(
+            proxy = proxy_class(
                 esp32_ref=lambda: self.esp32,
                 voice_bridge=self.voice_input_bridge,
                 usb_transport=self.usb_transport,
                 on_head_command=self.idle_gate.notify_head_command,
                 on_device_state=self.idle_gate.notify_device_state,
                 set_face_tracking=self._set_face_tracking_from_voice,
+                on_conversation_activity=lambda active: self._on_conversation_activity(proxy, active),
             )
+            return proxy
         if backend == "xiaozhi":
             return CloudProxy(voice_bridge=self.voice_input_bridge)
         logger.warning(
             "Unknown STACKCHAN_VOICE_BACKEND=%r; defaulting to gemini",
             backend,
         )
-        return GeminiVoiceProxy(
+        proxy = GeminiVoiceProxy(
             esp32_ref=lambda: self.esp32,
             voice_bridge=self.voice_input_bridge,
             usb_transport=self.usb_transport,
             on_head_command=self.idle_gate.notify_head_command,
             on_device_state=self.idle_gate.notify_device_state,
             set_face_tracking=self._set_face_tracking_from_voice,
+            on_conversation_activity=lambda active: self._on_conversation_activity(proxy, active),
         )
+        return proxy
 
     async def _set_face_tracking_from_voice(self, enabled: bool) -> dict:
         return await self._handle_external_local_tool("set_face_tracking", {"enabled": enabled})
@@ -332,6 +446,7 @@ class Gateway:
 
     async def start(self) -> None:
         """Start the ESP32 WebSocket server and HTTP capture server."""
+        self._stopping = False
         host = os.getenv("HOST", "0.0.0.0")
         ws_port = int(os.getenv("WS_PORT", os.getenv("PORT", "8765")))
         capture_port = self.capture_port
@@ -390,6 +505,8 @@ class Gateway:
         )
         # /track is up; now launch the face tracker that posts to it.
         self.face_tracker.start(f"http://127.0.0.1:{capture_port}/track")
+        if self.tracking_source == "robot":
+            self._tracking_sync_task = asyncio.create_task(self._tracking_sync_loop(), name="camera-tracking-mode")
 
     async def _handle_track(self, request: web.Request) -> web.Response:
         """Forward face-detection JSON from Vision Tracker to TrackingBridge.
@@ -399,6 +516,8 @@ class Gateway:
         HTTP 200 with {"ok": False} so the upstream tracker keeps streaming
         rather than tearing the pipeline down.
         """
+        if self.tracking_source != "mac":
+            return web.json_response({"ok": False, "error": "Webcam tracking is disabled; source is robot"}, status=409)
         try:
             detection = await request.json()
         except Exception:
@@ -539,7 +658,17 @@ class Gateway:
 
     async def stop(self) -> None:
         """Stop the gateway."""
+        self._stopping = True
         self._running = False
+        if self._tracking_sync_task is not None:
+            self._tracking_sync_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._tracking_sync_task
+            self._tracking_sync_task = None
+        connection = self.esp32.connection
+        if self.tracking_source == "robot" and connection is not None and getattr(connection, "camera_tracking_v1", False):
+            with suppress(ConnectionError, OSError, asyncio.TimeoutError):
+                await connection.send_head_tracking("off")
         await self.face_tracker.stop()
         await self.demo_reactions.stop()
         if self._http_runner:
