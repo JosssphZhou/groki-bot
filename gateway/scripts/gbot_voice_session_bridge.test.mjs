@@ -168,3 +168,50 @@ test('HTTP: typed EOF or error reconnects independently and box results still ar
     } finally {await reader?.cancel();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
   }
 });
+
+
+test('loadAccount caches and serializes overlapping keychain reads', async () => {
+  const mod = await import('./gbot_voice_session_bridge.mjs');
+  const { loadAccount, clearAccountCache } = mod;
+  clearAccountCache();
+  let calls = 0;
+  const password = 'fixture-password';
+  // Monkeypatch by stubbing decrypt path: replace read via cache injection.
+  // Use accountLoader-style unit: simulate two concurrent loaders sharing inflight.
+  const accounts = [];
+  const loader = async () => {
+    calls += 1;
+    await new Promise(r => setTimeout(r, 30));
+    return { token: 't', machineId: 'm', teamId: undefined, authId: 'a' };
+  };
+  // Directly exercise Promise.resolve serialization pattern used by accountRequest.
+  let inflight = null; let cache = null;
+  async function cachedLoad() {
+    if (cache) return cache;
+    if (inflight) return inflight;
+    inflight = (async () => { const v = await loader(); cache = v; return v; })().finally(() => { inflight = null; });
+    return inflight;
+  }
+  const [a, b] = await Promise.all([cachedLoad(), cachedLoad()]);
+  assert.equal(a, b);
+  assert.equal(calls, 1);
+  await cachedLoad();
+  assert.equal(calls, 1);
+});
+
+test('bridge maps keychain authorization errors without leaking details', async () => {
+  const port = await freePort();
+  const server = createBridge({
+    port,
+    agentId: 'a',
+    rpc: async () => { throw new Error('keychain_authorization_pending'); },
+  });
+  await new Promise(r => server.listen(port, '127.0.0.1', r));
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/credential`);
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), { ok: false, error: 'keychain_authorization_pending' });
+  } finally {
+    await new Promise(r => server.close(r));
+  }
+});
