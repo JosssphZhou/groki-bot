@@ -568,6 +568,8 @@ class GbotVoiceBridge:
                     "login_unavailable", "login_expired_open_grok_bot", "unsupported_storage",
                     "upstream_http_401", "upstream_http_403", "upstream_http_404",
                     "upstream_http_429", "bridge_request_failed",
+                    "keychain_authorization_pending", "keychain_authorization_timeout",
+                    "keychain_authorization_denied",
                 }
                 self.metrics["connection_error"] = (
                     reason if isinstance(reason, str) and reason in safe_reasons
@@ -591,7 +593,7 @@ class GbotVoiceBridge:
         self._http = aiohttp.ClientSession(
             trust_env=False,
             trace_configs=[trace],
-            timeout=aiohttp.ClientTimeout(total=30),
+            timeout=aiohttp.ClientTimeout(total=180),
         )
         try:
             # Independent requests; keep failure cleanup compatible with Python 3.10.
