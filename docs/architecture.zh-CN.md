@@ -97,11 +97,13 @@ flowchart LR
 
 | 接口 | 用途 |
 |---|---|
-| `GET /debug/status` | JSON 状态：机器人连接、Gemini 会话、最近的错误。安装时用它检查。 |
-| `GET /debug/panel` | 同样的状态，网页形式 |
-| `POST /capture` | 带摄像头工具的固件上传照片（需要 `Authorization: Bearer`，值为 `VISION_TOKEN` 或 `STACKCHAN_TOKEN`）。Groki Bot 固件不使用。 |
-| `POST /debug/inject-text` | 往当前会话里插入一段文字，受令牌保护 |
-| `POST /track` | Mac 人脸追踪程序发来的人脸位置（见下面的人脸追踪） |
+| `GET /debug/status` | JSON 状态：机器人连接、Gemini 会话、最近的错误。仅接受本机回环请求。 |
+| `GET /debug/panel` | 同样的状态，网页形式。仅接受本机回环请求。 |
+| `GET /debug/voice-health` | 语音会话健康状态。仅接受本机回环请求。 |
+| `POST /capture` | 带摄像头工具的固件上传照片。配置 `VISION_TOKEN`、`STACKCHAN_TOKEN` 或 `BEARER_TOKEN` 时校验 `Authorization: Bearer` 令牌；未配置时仅接受本机回环请求。Groki Bot 固件不使用。 |
+| `POST /debug/inject-text` | 往当前会话里插入一段文字。配置令牌时校验 `Authorization: Bearer` 令牌；未配置时仅接受本机回环请求。 |
+| `POST /track` | Mac 人脸追踪程序发来的人脸位置（见下面的人脸追踪）。仅接受本机回环请求。 |
+| `GET`/`POST /demo/intro`、`/demo/arm` | 本机演示触发接口。仅接受本机回环请求。 |
 
 **人脸追踪。** 在带摄像头的 Mac 上，网关启动 [tools/vision-tracker](../tools/vision-tracker/README.md)（`groki-vision-tracker --endpoint http://127.0.0.1:8766/track --fps 8`），程序退出后自动重启。追踪程序用 Apple Vision 找出每帧里置信度最高的人脸，每秒最多 8 次发送 `{"x", "y", "width", "height", "confidence", "timestamp"}`（0 到 1 的画面坐标）。`TrackingBridge` 把位置换算成头部角度并做平滑，最高每秒 50 次发给机器人。因为 Groki Bot 固件没有 MCP，转头用的是 XiaoZhi 控制消息 `{"type": "head", "yaw": <-90..90>, "pitch": <0..60>, "speed": <100..1000>}`。固件把角度限制在舵机限位之内；机器人说话时只保留最后一条指令，等这段回复说完再执行。机器人说话时和唤醒后听你说话时，网关不发转头指令；「看着我」「别看了」（`self.tracking.start` / `self.tracking.stop`）打开和关闭跟随。`/debug/status` 的 `face_tracking` 一节显示状态。设置方法见[网关 README 的人脸追踪一节](../gateway/README.zh-CN.md#人脸追踪)。
 
@@ -110,7 +112,7 @@ flowchart LR
 ## 3. 网关的安全默认值
 
 - Mac 控制（`STACKCHAN_MAC_CONTROL`）、给 Gemini 的设备工具（`STACKCHAN_GEMINI_DEVICE_TOOLS`）、USB 串口通道（`STACKCHAN_USB_TRANSPORT`）和交给 Grok Bot（`STACKCHAN_TOOL_BOT`）都是不设置就不开启。
-- 请设置 `STACKCHAN_TOKEN`：它保护机器人连接、`/capture` 和 `/debug/inject-text`。
+- 请设置 `STACKCHAN_TOKEN`：它保护机器人 WebSocket 连接，并为 `/capture` 和 `/debug/inject-text` 启用 Bearer 令牌校验。未配置令牌时，`/capture` 和 `/debug/inject-text` 仅接受本机回环请求；`/track`、`/debug/status`、`/debug/panel`、`/debug/voice-health`、`/demo/intro` 和 `/demo/arm` 始终仅接受本机回环请求。
 - 转发服务只绑定 127.0.0.1，从不接触 Grok 令牌。
 
 ## 4. 把任务交给 Grok Bot

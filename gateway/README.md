@@ -400,8 +400,8 @@ reconnect the MCP client, after a change).
 | `GEMINI_API_KEY` | none | Required only for the Gemini backend, not Grok login voice |
 | `STACKCHAN_GEMINI_VOICE` | `Kore` | Gemini voice name |
 | `STACKCHAN_GEMINI_MODEL` | `gemini-3.8-live` | Gemini Live model (set `gemini-3.1-flash-live-preview` to go back) |
-| `STACKCHAN_TOKEN` | empty | Shared secret with the robot; also protects `/capture` and `/debug/inject-text` |
-| `HOST`, `WS_PORT`, `CAPTURE_PORT` | `0.0.0.0`, `8765`, `8766` | Listen address and ports |
+| `STACKCHAN_TOKEN` | empty | Shared secret with the robot; also enables Bearer auth for `/capture` and `/debug/inject-text` (when `VISION_TOKEN`, `STACKCHAN_TOKEN`, and `BEARER_TOKEN` are all empty, both accept loopback requests only) |
+| `HOST`, `WS_PORT`, `CAPTURE_PORT` | `0.0.0.0`, `8765`, `8766` | Listen address and ports. HTTP `/track`, `/debug/*`, and `/demo/*` accept loopback requests only; `/capture` and `/debug/inject-text` allow remote requests only with a Bearer token |
 | `STACKCHAN_WAKE_WORD` | on | `0` disables the wake word gate |
 | `STACKCHAN_KWS_SCORE` | `7` | Higher makes the wake word easier to trigger |
 | `STACKCHAN_KWS_THRESHOLD` | `0.05` | Lower makes the wake word more sensitive |
@@ -439,9 +439,14 @@ reconnect the MCP client, after a change).
   in the gateway directory. The voice prompt asks for spoken confirmation
   before destructive actions, but that is a model instruction, not a hard
   permission check.
-- **Set `STACKCHAN_TOKEN`.** Without it, any device on your network can
-  connect as the robot, and the `/debug/inject-text` endpoint accepts text
-  from anyone who can reach port 8766.
+- **Set `STACKCHAN_TOKEN`.** Without it, the WebSocket endpoint accepts
+  unauthenticated device connections. On HTTP port 8766, `/track`,
+  `/debug/status`, `/debug/panel`, `/debug/voice-health`, `/demo/intro`, and
+  `/demo/arm` accept loopback (`127.0.0.1` / `::1`) requests only based on the
+  transport peer address; `/capture` and `/debug/inject-text` also accept
+  loopback requests only until `VISION_TOKEN`, `STACKCHAN_TOKEN`, or
+  `BEARER_TOKEN` is set, after which they require a matching
+  `Authorization: Bearer` header.
 - **The Grok Bot forwarding service binds 127.0.0.1 only.** Any program on
   this computer that can reach port 18770 can message your Grok Bot agents as
   you. Do not expose it to the network.

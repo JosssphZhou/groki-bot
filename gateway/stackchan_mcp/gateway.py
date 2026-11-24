@@ -61,7 +61,7 @@ class TrackQuietAccessLogger(AccessLogger):
                     dct[k2] = value
                     extra[k1] = dct
             message = self._log_format % tuple(values)
-            if request.path == "/track":
+            if request.path == "/track" or response.status == 403:
                 self.logger.debug(message, extra=extra)
             else:
                 self.logger.info(message, extra=extra)
