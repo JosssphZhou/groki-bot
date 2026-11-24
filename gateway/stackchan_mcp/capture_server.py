@@ -76,15 +76,8 @@ def _access_control_middleware():
     @web.middleware
     async def access_control(request: web.Request, handler):
         nonlocal last_rejection_log
-        if request.path in TOKEN_OR_LOOPBACK_PATHS:
-            expected_token = request.app[CAPTURE_TOKEN_KEY]
-            if expected_token:
-                if not _is_authorized(
-                    request.headers.get("Authorization", ""), expected_token
-                ):
-                    logger.warning("HTTP auth rejected: path=%r", request.path)
-                    return web.json_response({"error": "Unauthorized"}, status=401)
-                return await handler(request)
+        if request.path in TOKEN_OR_LOOPBACK_PATHS and request.app[CAPTURE_TOKEN_KEY]:
+            return await handler(request)
 
         peer_ip = _extract_peer_ip(request)
         if not _is_loopback_address(peer_ip):
@@ -105,21 +98,27 @@ def _access_control_middleware():
 
 def _is_authorized(auth_header: str, expected_token: str) -> bool:
     """Return whether the bearer auth header matches the expected token."""
-    return hmac.compare_digest(auth_header, f"Bearer {expected_token}")
+    return hmac.compare_digest(
+        auth_header.encode("utf-8", errors="surrogatepass"),
+        f"Bearer {expected_token}".encode("utf-8", errors="surrogatepass"),
+    )
 
 
-async def handle_capture(request: web.Request) -> web.Response:
-    """Handle photo upload from ESP32."""
+def _require_bearer_auth(request: web.Request, label: str) -> web.Response | None:
+    """Return a 401 response if a bearer token is configured and the request is unauthorized."""
     expected_token = request.app[CAPTURE_TOKEN_KEY]
     if expected_token and not _is_authorized(
         request.headers.get("Authorization", ""), expected_token
     ):
-        logger.warning("Capture upload auth rejected")
-        return web.Response(
-            text='{"error": "Unauthorized"}',
-            status=401,
-            content_type="application/json",
-        )
+        logger.warning("%s auth rejected", label)
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    return None
+
+
+async def handle_capture(request: web.Request) -> web.Response:
+    """Handle photo upload from ESP32."""
+    if (rejected := _require_bearer_auth(request, "Capture upload")) is not None:
+        return rejected
 
     os.makedirs(CAPTURE_DIR, exist_ok=True)
 
@@ -165,12 +164,8 @@ async def handle_capture(request: web.Request) -> web.Response:
 
 async def handle_inject_text(request: web.Request) -> web.Response:
     """Inject a plain text user turn into the active Gemini Live session."""
-    expected_token = request.app[CAPTURE_TOKEN_KEY]
-    if expected_token and not _is_authorized(
-        request.headers.get("Authorization", ""), expected_token
-    ):
-        logger.warning("Debug text injection auth rejected")
-        return web.json_response({"error": "Unauthorized"}, status=401)
+    if (rejected := _require_bearer_auth(request, "Debug text injection")) is not None:
+        return rejected
 
     try:
         body = await request.json()

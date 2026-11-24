@@ -290,7 +290,7 @@ curl -s -X POST http://127.0.0.1:18770/send \
 | `GEMINI_API_KEY` | 无 | 仅 Gemini 后端需要，Grok 登录态语音不需要 |
 | `STACKCHAN_GEMINI_VOICE` | `Kore` | Gemini 的音色 |
 | `STACKCHAN_GEMINI_MODEL` | `gemini-3.8-live` | Gemini Live 模型（改回 `gemini-3.1-flash-live-preview` 即可退回） |
-| `STACKCHAN_TOKEN` | 空 | 与机器人共享的密码，同时为 `/capture` 和 `/debug/inject-text` 启用 Bearer 令牌校验（留空时两接口仅接受本机回环请求） |
+| `STACKCHAN_TOKEN` | 空 | 与机器人共享的密码，同时为 `/capture` 和 `/debug/inject-text` 启用 Bearer 令牌校验（`VISION_TOKEN`、`STACKCHAN_TOKEN` 和 `BEARER_TOKEN` 均未配置时，两接口仅接受本机回环请求） |
 | `HOST`、`WS_PORT`、`CAPTURE_PORT` | `0.0.0.0`、`8765`、`8766` | 监听地址和端口。HTTP 的 `/track`、`/debug/*` 与 `/demo/*` 仅接受本机回环请求；`/capture` 和 `/debug/inject-text` 在配置令牌后允许带 Bearer 令牌的远端请求 |
 | `STACKCHAN_WAKE_WORD` | 开 | 设为 `0` 关闭唤醒词 |
 | `STACKCHAN_KWS_SCORE` | `7` | 越高越容易唤醒 |

@@ -400,7 +400,7 @@ reconnect the MCP client, after a change).
 | `GEMINI_API_KEY` | none | Required only for the Gemini backend, not Grok login voice |
 | `STACKCHAN_GEMINI_VOICE` | `Kore` | Gemini voice name |
 | `STACKCHAN_GEMINI_MODEL` | `gemini-3.8-live` | Gemini Live model (set `gemini-3.1-flash-live-preview` to go back) |
-| `STACKCHAN_TOKEN` | empty | Shared secret with the robot; also enables Bearer auth for `/capture` and `/debug/inject-text` (when empty, both accept loopback requests only) |
+| `STACKCHAN_TOKEN` | empty | Shared secret with the robot; also enables Bearer auth for `/capture` and `/debug/inject-text` (when `VISION_TOKEN`, `STACKCHAN_TOKEN`, and `BEARER_TOKEN` are all empty, both accept loopback requests only) |
 | `HOST`, `WS_PORT`, `CAPTURE_PORT` | `0.0.0.0`, `8765`, `8766` | Listen address and ports. HTTP `/track`, `/debug/*`, and `/demo/*` accept loopback requests only; `/capture` and `/debug/inject-text` allow remote requests only with a Bearer token |
 | `STACKCHAN_WAKE_WORD` | on | `0` disables the wake word gate |
 | `STACKCHAN_KWS_SCORE` | `7` | Higher makes the wake word easier to trigger |
