@@ -389,3 +389,132 @@ async def test_token_endpoints_require_bearer_and_allow_remote_with_valid_token(
         assert recorded["inject"] == ["allowed", "allowed"]
     finally:
         await gw.stop()
+
+
+@pytest.mark.asyncio
+async def test_token_endpoints_reject_non_ascii_and_malformed_tokens_without_500(
+    monkeypatch, tmp_path
+):
+    gw, app, _base_url, recorded = await _start_gateway(
+        monkeypatch, tmp_path, env={"STACKCHAN_TOKEN": "shared-secret"}
+    )
+    try:
+        invalid_headers = [
+            {},
+            {"Authorization": ""},
+            {"Authorization": "Bearer"},
+            {"Authorization": "Bearer "},
+            {"Authorization": "Basic dXNlcjpwYXNz"},
+            {"Authorization": "shared-secret"},
+            {"Authorization": "Bearer 令牌"},
+            {"Authorization": "Bearer caf\u00e9"},
+            {"Authorization": "Bearer " + ("a" * 4096)},
+        ]
+        for peername in (("192.168.1.50", 54321), ("127.0.0.1", 54321)):
+            for bad_headers in invalid_headers:
+                cap_body, cap_ct = _make_multipart_capture()
+                cap_resp = await app._handle(
+                    _make_peer_request(
+                        app,
+                        "POST",
+                        "/capture",
+                        peername=peername,
+                        headers=bad_headers,
+                        body=cap_body,
+                        content_type=cap_ct,
+                    )
+                )
+                assert cap_resp.status == 401
+
+                inj_resp = await app._handle(
+                    _make_peer_request(
+                        app,
+                        "POST",
+                        "/debug/inject-text",
+                        peername=peername,
+                        headers=bad_headers,
+                        body=b'{"text": "nope"}',
+                        content_type="application/json",
+                    )
+                )
+                assert inj_resp.status == 401
+
+        # Exercise aiohttp's real HTTP header parser over TCP with raw non-ASCII bytes.
+        port = gw._http_runner.addresses[0][1]
+        for raw_auth in (
+            "Bearer 令牌".encode("utf-8"),
+            b"Bearer caf\xe9",
+            b"Bearer " + (b"x" * 4096),
+        ):
+            for path, content_type, body in (
+                ("/debug/inject-text", b"application/json", b'{"text":"ping"}'),
+                (
+                    "/capture",
+                    b"multipart/form-data; boundary=----b",
+                    b"------b--\r\n",
+                ),
+            ):
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                try:
+                    raw_request = (
+                        f"POST {path} HTTP/1.1\r\n".encode("ascii")
+                        + b"Host: 127.0.0.1\r\n"
+                        + b"Authorization: "
+                        + raw_auth
+                        + b"\r\n"
+                        + b"Content-Type: "
+                        + content_type
+                        + b"\r\n"
+                        + f"Content-Length: {len(body)}\r\n".encode("ascii")
+                        + b"Connection: close\r\n\r\n"
+                        + body
+                    )
+                    writer.write(raw_request)
+                    await writer.drain()
+                    raw_response = await reader.read()
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+                status_line = raw_response.split(b"\r\n", 1)[0].decode("latin-1")
+                assert status_line.startswith("HTTP/1.1 401 "), (
+                    f"{path} with {raw_auth!r} returned {status_line!r}"
+                )
+
+        assert list(tmp_path.iterdir()) == []
+        assert recorded["inject"] == []
+    finally:
+        await gw.stop()
+
+    # Without any configured token, non-loopback requests with non-ASCII headers still return 403.
+    gw_no_token, app_no_token, _url, rec_no_token = await _start_gateway(monkeypatch, tmp_path)
+    try:
+        cap_body, cap_ct = _make_multipart_capture()
+        cap_resp = await app_no_token._handle(
+            _make_peer_request(
+                app_no_token,
+                "POST",
+                "/capture",
+                peername=("192.168.1.50", 54321),
+                headers={"Authorization": "Bearer 令牌"},
+                body=cap_body,
+                content_type=cap_ct,
+            )
+        )
+        assert cap_resp.status == 403
+
+        inj_resp = await app_no_token._handle(
+            _make_peer_request(
+                app_no_token,
+                "POST",
+                "/debug/inject-text",
+                peername=("192.168.1.50", 54321),
+                headers={"Authorization": "Bearer 令牌"},
+                body=b'{"text": "nope"}',
+                content_type="application/json",
+            )
+        )
+        assert inj_resp.status == 403
+        assert list(tmp_path.iterdir()) == []
+        assert rec_no_token["inject"] == []
+    finally:
+        await gw_no_token.stop()
