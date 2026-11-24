@@ -97,11 +97,13 @@ A wrong token is rejected with HTTP 401 (`ESP32 auth rejected` in the gateway lo
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /debug/status` | JSON status: robot connection, Gemini session, last errors. Use it to check setup. |
-| `GET /debug/panel` | The same status as a web page |
-| `POST /capture` | Photo upload from firmware that has a camera tool (needs `Authorization: Bearer` with `VISION_TOKEN` or `STACKCHAN_TOKEN`). Not used by the Groki Bot firmware. |
-| `POST /debug/inject-text` | Inject a text turn into the live session, token protected |
-| `POST /track` | Face positions from the Mac face tracker (see Face tracking below) |
+| `GET /debug/status` | JSON status: robot connection, Gemini session, last errors. Loopback only. |
+| `GET /debug/panel` | The same status as a web page. Loopback only. |
+| `GET /debug/voice-health` | Voice session health status. Loopback only. |
+| `POST /capture` | Photo upload from firmware that has a camera tool. Requires `Authorization: Bearer` when `VISION_TOKEN`, `STACKCHAN_TOKEN`, or `BEARER_TOKEN` is set; otherwise loopback only. Not used by the Groki Bot firmware. |
+| `POST /debug/inject-text` | Inject a text turn into the live session. Requires `Authorization: Bearer` when a token is configured; otherwise loopback only. |
+| `POST /track` | Face positions from the Mac face tracker (see Face tracking below). Loopback only. |
+| `GET`/`POST /demo/intro`, `/demo/arm` | Local demo triggers. Loopback only. |
 
 **Face tracking.** On a Mac with a camera, the gateway starts [tools/vision-tracker](../tools/vision-tracker/README.md) (`groki-vision-tracker --endpoint http://127.0.0.1:8766/track --fps 8`) and restarts it if it exits. The tracker finds the most confident face in each frame with Apple Vision and posts `{"x", "y", "width", "height", "confidence", "timestamp"}` (0..1 image coordinates) at most 8 times a second. `TrackingBridge` maps the position to head angles, smooths them, and sends them at up to 50 Hz as the XiaoZhi control message `{"type": "head", "yaw": <-90..90>, "pitch": <0..60>, "speed": <100..1000>}`, because the Groki Bot firmware has no MCP. The firmware clamps the angles to its servo limits and, while the robot is speaking, keeps only the last command and applies it when the reply ends. The gateway sends no head moves while the robot speaks or listens after the wake word; "look at me" / "stop looking at me" (`self.tracking.start` / `self.tracking.stop`) switch following on and off. `/debug/status` shows the state under `face_tracking`. Setup: [gateway README, Face tracking](../gateway/README.md#face-tracking).
 
@@ -110,7 +112,7 @@ A wrong token is rejected with HTTP 401 (`ESP32 auth rejected` in the gateway lo
 ## 3. The gateway's safety defaults
 
 - Mac control (`STACKCHAN_MAC_CONTROL`), device tools for Gemini (`STACKCHAN_GEMINI_DEVICE_TOOLS`), the USB serial channel (`STACKCHAN_USB_TRANSPORT`) and the Grok Bot hand-off (`STACKCHAN_TOOL_BOT`) are all off until you set them.
-- Set `STACKCHAN_TOKEN`: it guards the robot connection, `/capture` and `/debug/inject-text`.
+- Set `STACKCHAN_TOKEN`: it guards the robot WebSocket connection and enables Bearer authentication for `/capture` and `/debug/inject-text`. Without a token, `/capture` and `/debug/inject-text` accept loopback requests only; `/track`, `/debug/status`, `/debug/panel`, `/debug/voice-health`, `/demo/intro`, and `/demo/arm` always accept loopback requests only.
 - The forwarding service binds 127.0.0.1 only and never handles a Grok token.
 
 ## 4. Grok Bot hand-off

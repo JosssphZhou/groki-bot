@@ -10,7 +10,9 @@ can view the image via the Read tool.
 
 from __future__ import annotations
 
+import hmac
 import inspect
+import ipaddress
 import json
 import logging
 import os
@@ -32,11 +34,78 @@ INJECT_TEXT_HANDLER_KEY = web.AppKey(
     object,
 )
 DEBUG_STATUS_KEY = web.AppKey("debug_status", DebugStatus)
+TOKEN_OR_LOOPBACK_PATHS = frozenset({"/capture", "/debug/inject-text"})
+
+
+def _extract_peer_ip(request: web.Request) -> str | None:
+    """Return the transport peer IP address, ignoring forwarding headers."""
+    transport = getattr(request, "transport", None)
+    if transport is not None:
+        peername = transport.get_extra_info("peername")
+        if isinstance(peername, (tuple, list)) and peername:
+            return str(peername[0])
+        if isinstance(peername, str) and peername:
+            return peername
+    remote = getattr(request, "remote", None)
+    return str(remote) if remote else None
+
+
+def _is_loopback_address(host: str | None) -> bool:
+    """Return True only for IPv4/IPv6 loopback peers, including IPv4-mapped IPv6."""
+    if not host:
+        return False
+    raw = host.strip()
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1]
+    if "%" in raw:
+        raw = raw.split("%", 1)[0]
+    try:
+        addr = ipaddress.ip_address(raw)
+    except ValueError:
+        return False
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        return mapped.is_loopback
+    return addr.is_loopback
+
+
+def _access_control_middleware():
+    """Enforce loopback-only access on control/debug routes and token-or-loopback on capture/inject."""
+    last_rejection_log: float | None = None
+
+    @web.middleware
+    async def access_control(request: web.Request, handler):
+        nonlocal last_rejection_log
+        if request.path in TOKEN_OR_LOOPBACK_PATHS:
+            expected_token = request.app[CAPTURE_TOKEN_KEY]
+            if expected_token:
+                if not _is_authorized(
+                    request.headers.get("Authorization", ""), expected_token
+                ):
+                    logger.warning("HTTP auth rejected: path=%r", request.path)
+                    return web.json_response({"error": "Unauthorized"}, status=401)
+                return await handler(request)
+
+        peer_ip = _extract_peer_ip(request)
+        if not _is_loopback_address(peer_ip):
+            now = time.monotonic()
+            if last_rejection_log is None or now - last_rejection_log >= 30:
+                logger.warning(
+                    "Rejected non-loopback HTTP request: peer=%r path=%r",
+                    peer_ip,
+                    request.path,
+                )
+                last_rejection_log = now
+            return web.json_response({"error": "Loopback requests only"}, status=403)
+
+        return await handler(request)
+
+    return access_control
 
 
 def _is_authorized(auth_header: str, expected_token: str) -> bool:
     """Return whether the bearer auth header matches the expected token."""
-    return auth_header == f"Bearer {expected_token}"
+    return hmac.compare_digest(auth_header, f"Bearer {expected_token}")
 
 
 async def handle_capture(request: web.Request) -> web.Response:
@@ -130,7 +199,7 @@ async def handle_inject_text(request: web.Request) -> web.Response:
 
 
 async def handle_debug_status(request: web.Request) -> web.Response:
-    """Return the gateway status snapshot as JSON (read-only, no auth)."""
+    """Return the gateway status snapshot as JSON (read-only, loopback-only)."""
     return web.json_response(request.app[DEBUG_STATUS_KEY].snapshot())
 
 
@@ -154,7 +223,7 @@ def create_capture_app(
     debug_status: DebugStatus | None = None,
 ) -> web.Application:
     """Create the HTTP capture application."""
-    app = web.Application()
+    app = web.Application(middlewares=[_access_control_middleware()])
     app[CAPTURE_TOKEN_KEY] = capture_token
     app[INJECT_TEXT_HANDLER_KEY] = inject_text_handler
     app[DEBUG_STATUS_KEY] = debug_status or get_debug_status()

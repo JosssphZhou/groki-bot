@@ -290,8 +290,8 @@ curl -s -X POST http://127.0.0.1:18770/send \
 | `GEMINI_API_KEY` | 无 | 仅 Gemini 后端需要，Grok 登录态语音不需要 |
 | `STACKCHAN_GEMINI_VOICE` | `Kore` | Gemini 的音色 |
 | `STACKCHAN_GEMINI_MODEL` | `gemini-3.8-live` | Gemini Live 模型（改回 `gemini-3.1-flash-live-preview` 即可退回） |
-| `STACKCHAN_TOKEN` | 空 | 与机器人共享的密码，同时保护 `/capture` 和 `/debug/inject-text` |
-| `HOST`、`WS_PORT`、`CAPTURE_PORT` | `0.0.0.0`、`8765`、`8766` | 监听地址和端口 |
+| `STACKCHAN_TOKEN` | 空 | 与机器人共享的密码，同时为 `/capture` 和 `/debug/inject-text` 启用 Bearer 令牌校验（留空时两接口仅接受本机回环请求） |
+| `HOST`、`WS_PORT`、`CAPTURE_PORT` | `0.0.0.0`、`8765`、`8766` | 监听地址和端口。HTTP 的 `/track`、`/debug/*` 与 `/demo/*` 仅接受本机回环请求；`/capture` 和 `/debug/inject-text` 在配置令牌后允许带 Bearer 令牌的远端请求 |
 | `STACKCHAN_WAKE_WORD` | 开 | 设为 `0` 关闭唤醒词 |
 | `STACKCHAN_KWS_SCORE` | `7` | 越高越容易唤醒 |
 | `STACKCHAN_KWS_THRESHOLD` | `0.05` | 越低越灵敏 |
@@ -324,7 +324,7 @@ curl -s -X POST http://127.0.0.1:18770/send \
 ## 安全
 
 - **Mac 控制默认关闭。** 设了 `STACKCHAN_MAC_CONTROL=1` 之后，任何在机器人旁边说话的人都能打开应用和网址、调音量、截屏、运行快捷指令，还能启动可能修改网关目录下文件的 `claude -p` 任务。语音提示词要求破坏性操作先口头确认，但这只是给模型的指令，不是强制的权限检查。
-- **请设置 `STACKCHAN_TOKEN`。** 不设的话，同一网络里的任何设备都能冒充机器人连上来，能访问 8766 端口的人也能往 `/debug/inject-text` 发文字。
+- **请设置 `STACKCHAN_TOKEN`。** 不设时，WebSocket 接口不校验设备令牌。在 HTTP 8766 端口上，`/track`、`/debug/status`、`/debug/panel`、`/debug/voice-health`、`/demo/intro` 和 `/demo/arm` 依据传输层对端地址仅接受本机回环（`127.0.0.1` / `::1`）请求；`/capture` 和 `/debug/inject-text` 在未配置 `VISION_TOKEN`、`STACKCHAN_TOKEN` 或 `BEARER_TOKEN` 时同样仅接受本机回环请求，配置后要求匹配 `Authorization: Bearer` 令牌。
 - **Grok Bot 转发服务只绑定 127.0.0.1。** 这台电脑上能访问 18770 端口的任何程序，都能以你的身份给 Grok Bot 智能体发消息。不要把它暴露到网络上。
 - **密钥不要进 Git。** `.gitignore` 已经忽略 `.env`。不要把密钥写进脚本、测试文件或 issue。
 
