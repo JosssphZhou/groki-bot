@@ -52,10 +52,16 @@ bool ensure_partition() {
         ESP_LOGW(kTag, "no \"%s\" partition", kPart);
         return false;
     }
-    esp_err_t err = nvs_flash_init_partition_ptr(part);
+    // The name API reuses avatar_vm's registered storage. The pointer API
+    // rescans it in IDF 5.5, starving idle tasks while audio/rendering run.
+    // Keep pointer init for first use of SPIFFS-tagged legacy layouts.
+    esp_err_t err = nvs_flash_init_partition(kPart);
+    if (err == ESP_ERR_NOT_FOUND) {
+        err = nvs_flash_init_partition_ptr(part);
+    }
     if (err != ESP_OK && err != ESP_ERR_NVS_NO_FREE_PAGES &&
         err != ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        // 既に初期化済み等 — open できるかで最終判断する。
+        // 初期化エラー時は、呼び出し元の open で最終判断する。
         ESP_LOGD(kTag, "nvs init on \"%s\": %s (open で確認)", kPart, esp_err_to_name(err));
     }
     inited = true;

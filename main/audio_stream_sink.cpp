@@ -450,7 +450,8 @@ void worker_task(void* /*arg*/)
             }
 
             // --- Bring up the speaker once pre-roll is satisfied ---
-            if (!playback_started && ring.available_read() >= kPrerollSamples) {
+            if (!playback_started && ring.available_read() >= kPrerollSamples &&
+                xTaskGetTickCount() >= play_fail_backoff_until) {
                 // Wait for the conv-task to have actually released I2S.
                 // It will have set conversation_yielded_i2s = true after
                 // observing audio_stream_active in its main loop. 500 ms
@@ -461,14 +462,20 @@ void worker_task(void* /*arg*/)
                     if (xTaskGetTickCount() - wait_started > pdMS_TO_TICKS(500)) break;
                     vTaskDelay(pdMS_TO_TICKS(20));
                 }
-                M5.Speaker.begin();
-                i2s_acquired = true;
-                playback_started = true;
-                g_mouth_smoothed = 0.0f;       // fresh envelope per clip
-                g_db_baseline_init = false;     // re-learn loudness baseline
-                ESP_LOGI(kTag, "playback started: %u samples pre-rolled @ %u Hz",
-                         static_cast<unsigned>(ring.available_read()),
-                         static_cast<unsigned>(pcm_sample_rate));
+                if (!M5.Speaker.begin()) {
+                    // Do not mark playback started: playRaw would call begin()
+                    // again on every chunk and spin i2s_alloc_dma_desc.
+                    ESP_LOGW(kTag, "speaker begin failed (I2S/DMA); backing off 1 s");
+                    play_fail_backoff_until = xTaskGetTickCount() + pdMS_TO_TICKS(1000);
+                } else {
+                    i2s_acquired = true;
+                    playback_started = true;
+                    g_mouth_smoothed = 0.0f;       // fresh envelope per clip
+                    g_db_baseline_init = false;     // re-learn loudness baseline
+                    ESP_LOGI(kTag, "playback started: %u samples pre-rolled @ %u Hz",
+                             static_cast<unsigned>(ring.available_read()),
+                             static_cast<unsigned>(pcm_sample_rate));
+                }
             }
 
             // --- Feed speaker as long as queue has space + ring has data ---
