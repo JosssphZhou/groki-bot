@@ -6,7 +6,9 @@
  * Internal APIs are version dependent; expired sessions must be renewed in the app.
  */
 import { readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
+const execFileAsync = promisify(execFile);
 import { pbkdf2Sync, createDecipheriv, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -20,14 +22,56 @@ export const RPC_ROUTES = Object.freeze({
   'POST /tool': 'VoiceCallHarnessTool',
 });
 
-export function loadAccount() {
+const KEYCHAIN_SERVICE = 'Grok Bot Safe Storage';
+const KEYCHAIN_TIMEOUT_MS = Number(process.env.GBOT_VOICE_KEYCHAIN_TIMEOUT_MS || 300000);
+let accountCache = null; // { account, expMs }
+let accountInflight = null;
+
+export function clearAccountCache() {
+  accountCache = null;
+  accountInflight = null;
+}
+
+function keychainBusy() {
+  try {
+    execFileSync('/usr/bin/pgrep', ['-x', 'security'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000 });
+    return true;
+  } catch (error) {
+    // pgrep exits 1 when no process matches.
+    if (error && (error.status === 1 || error.code === 1)) return false;
+    return false;
+  }
+}
+
+function mapKeychainError(error) {
+  const message = String(error?.message || error || '');
+  if (error?.code === 'ETIMEDOUT' || /ETIMEDOUT/.test(message)) return new Error('keychain_authorization_timeout');
+  // macOS security(1) often uses status 36/44/128 for auth cancel/deny.
+  if ([36, 44, 128, -128].includes(error?.status) || /User interaction is not allowed|unable to get password|auth/i.test(message)) {
+    return new Error('keychain_authorization_denied');
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+async function readSafeStoragePassword() {
+  if (keychainBusy()) throw new Error('keychain_authorization_pending');
+  const timeout = Number.isFinite(KEYCHAIN_TIMEOUT_MS) && KEYCHAIN_TIMEOUT_MS >= 10000 ? KEYCHAIN_TIMEOUT_MS : 300000;
+  try {
+    const { stdout } = await execFileAsync('/usr/bin/security', ['find-generic-password', '-w', '-s', KEYCHAIN_SERVICE], {
+      encoding: 'utf8', timeout, maxBuffer: 1024 * 1024,
+    });
+    return String(stdout).trimEnd();
+  } catch (error) {
+    throw mapKeychainError(error);
+  }
+}
+
+/** Sync helper for tests/mocks; prefer loadAccount() which is async and cached. */
+export function decryptAccountWithPassword(password) {
   const data = JSON.parse(readFileSync(join(homedir(), 'Library/Application Support/Grok Bot/sand-secrets.json'), 'utf8'));
   const accounts = JSON.parse(data['cursor-accounts']);
   const active = accounts.accounts[accounts.active];
   if (!active) throw new Error('login_unavailable');
-  const password = execFileSync('/usr/bin/security', ['find-generic-password', '-w', '-s', 'Grok Bot Safe Storage'], {
-    encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000,
-  }).trimEnd();
   const key = pbkdf2Sync(password, 'saltysalt', 1003, 16, 'sha1');
   const decrypt = (value) => {
     const blob = Buffer.from(value, 'base64');
@@ -40,7 +84,25 @@ export function loadAccount() {
   if (!Number.isFinite(claims.exp) || claims.exp * 1000 < Date.now() + 30000) throw new Error('login_expired_open_grok_bot');
   const machineId = decrypt(data['cursor-machine-id']);
   const teamId = active['cursor-selected-team-id'] ? decrypt(active['cursor-selected-team-id']) : undefined;
-  return { token, machineId, teamId, authId: claims.sub };
+  return { token, machineId, teamId, authId: claims.sub, expMs: claims.exp * 1000 };
+}
+
+export async function loadAccount() {
+  if (accountCache && accountCache.expMs > Date.now() + 30000) return accountCache.account;
+  if (accountInflight) return accountInflight;
+  accountInflight = (async () => {
+    try {
+      if (accountCache && accountCache.expMs > Date.now() + 30000) return accountCache.account;
+      const password = await readSafeStoragePassword();
+      const loaded = decryptAccountWithPassword(password);
+      const { expMs, ...account } = loaded;
+      accountCache = { account, expMs };
+      return account;
+    } finally {
+      accountInflight = null;
+    }
+  })();
+  return accountInflight;
 }
 
 function checksum(machineId) {
@@ -55,7 +117,7 @@ async function accountRequest(method, body, { accountLoader = loadAccount, fetch
   if (!Object.values(RPC_ROUTES).includes(method) && method !== 'EnsureSandBox' && method !== 'WatchGrokBotTranscripts') throw new Error('rpc_forbidden');
   if (method === 'EnsureSandBox' && ![JSON.stringify({wake: false, supportsAsleepBox: true}), '{}'].includes(JSON.stringify(body))) throw new Error('rpc_forbidden');
   if (method === 'WatchGrokBotTranscripts' && (!streaming || body.includeUnlistedAgents !== false || body.inlineBodyMaxBytes !== 65536 || body.cursors?.length !== 1 || typeof body.cursors[0].agentId !== 'string' || Object.keys(body.cursors[0]).some(k => !['agentId', 'generation', 'afterUpdatedSeq'].includes(k)) || body.cursors[0].generation !== 0 || body.cursors[0].afterUpdatedSeq !== '0')) throw new Error('rpc_forbidden');
-  const account = accountLoader();
+  const account = await Promise.resolve(accountLoader());
   const headers = {
     authorization: `Bearer ${account.token}`, 'content-type': 'application/json',
     'connect-protocol-version': '1', 'x-cursor-client-type': 'sand',
@@ -104,7 +166,7 @@ export class NativeSandboxClient {
   async #connect() {
     if (this.#connection) return this.#connection;
     if (!this.#loading) this.#loading = (async () => {
-      const account = this.accountLoader();
+      const account = await Promise.resolve(this.accountLoader());
       const raw = await this.rpc('EnsureSandBox', this.connectMode === 'normal' ? {} : {wake: false, supportsAsleepBox: true}, {accountLoader: () => account, fetcher: this.fetcher});
       if (typeof raw.gatewayToken !== 'string' || !raw.gatewayToken) throw new Error('sandbox_connection_unavailable');
       const headers = {authorization: `Bearer ${raw.gatewayToken}`};
@@ -421,7 +483,7 @@ export function createBridge({ port = 18771, rpc = accountRpc, agentId = process
       }
       return send(200, result);
     } catch (error) {
-      const safe = /^(upstream_http_\d{3}|login_unavailable|login_expired_open_grok_bot|unsupported_storage)$/.test(error.message) ? error.message : 'bridge_request_failed';
+      const safe = /^(upstream_http_\d{3}|login_unavailable|login_expired_open_grok_bot|unsupported_storage|keychain_authorization_pending|keychain_authorization_timeout|keychain_authorization_denied)$/.test(error.message) ? error.message : 'bridge_request_failed';
       return send(502, { ok: false, error: safe });
     }
   });

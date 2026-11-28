@@ -41,6 +41,8 @@ class GbotVoiceProxy(GeminiVoiceProxy):
         self._health["action_required"] = error in {
             "login_unavailable", "login_expired_open_grok_bot", "unsupported_storage",
             "upstream_http_401", "upstream_http_403",
+            "keychain_authorization_pending", "keychain_authorization_timeout",
+            "keychain_authorization_denied",
         }
         if connected:
             self._health["last_verified_at"] = time.time()
