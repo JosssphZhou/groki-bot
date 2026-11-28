@@ -214,6 +214,10 @@ public:
             ESP_LOGI(kTag, "playback started (%u samples pre-rolled)",
                      static_cast<unsigned>(ring_.available_read()));
         }
+        // begin_session already called Speaker.begin(). If that failed, do not
+        // walk the ring calling playRaw — each call retries I2S init.
+        // begin() itself refuses another attempt for 1 s after ALLOC_FAIL.
+        if (!M5.Speaker.isRunning() && !M5.Speaker.begin()) return;
         while (M5.Speaker.isPlaying(kSpeakerChannel) < 2 && ring_.available_read() >= kChunkSamples) {
             auto* buf = scratch_[scratch_idx_];
             scratch_idx_ = (scratch_idx_ + 1) % scratch_.size();

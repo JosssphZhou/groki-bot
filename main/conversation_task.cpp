@@ -706,8 +706,17 @@ private:
                M5.Speaker.isPlaying(kSpeakerChannel) < kSegmentBuffers - 1) {
             const std::size_t n = std::min(kSegmentSamples, assistant_pcm_.size() - seg_pos_);
             std::memcpy(seg_buf_[seg_next_], assistant_pcm_.data() + seg_pos_, n * sizeof(std::int16_t));
-            M5.Speaker.playRaw(seg_buf_[seg_next_], n, speaker_sample_rate_, /*stereo=*/false,
-                               /*repeat=*/1, kSpeakerChannel, /*stop_current_sound=*/false);
+            if (!M5.Speaker.playRaw(seg_buf_[seg_next_], n, speaker_sample_rate_, /*stereo=*/false,
+                                    /*repeat=*/1, kSpeakerChannel, /*stop_current_sound=*/false)) {
+                // Queue full: try again next tick. I2S down: do not spin
+                // playRaw — each call re-enters channel init (ALLOC_FAIL storm).
+                if (!M5.Speaker.isRunning()) {
+                    ESP_LOGW(kTag, "playRaw: speaker I2S is down; ending turn");
+                    finish_speaking();
+                    return;
+                }
+                break;
+            }
             seg_pos_ += n;
             seg_next_ = (seg_next_ + 1) % kSegmentBuffers;
             // Account for every chunk whose tail is now queued. A single
@@ -794,6 +803,16 @@ private:
         seg_next_ = 0;
         playback_start_ms_ = now_ms();
         playback_start_us_ = now_us();
+        // One I2S bring-up. playRaw also calls begin(); a failed init used to
+        // be retried on every service tick and starved the idle task.
+        if (!M5.Speaker.begin()) {
+            ESP_LOGW(kTag, "speaker I2S init failed (DMA); dropping this reply");
+            assistant_pcm_.clear();
+            audio_complete_ = false;
+            pending_chunks_.clear();
+            enter_listening();
+            return;
+        }
         set_local(Local::Speaking);
         ESP_LOGI(kTag, "speaking (streaming)");
     }
@@ -1191,6 +1210,13 @@ private:
         // needs to belong to the speaker before playRaw.
         M5.Mic.end();
         vTaskDelay(kI2sSettle);
+        if (!M5.Speaker.begin()) {
+            ESP_LOGW(kTag, "katakoto: speaker I2S init failed");
+            // begin() enabled the amplifier before I2S init failed. end()
+            // turns it back off and parks the DMA hole again.
+            M5.Speaker.end();
+            return R"({"ok":false,"error":"speaker i2s"})";
+        }
 
         // Pre-compute peak envelope so the avatar mouth opens in sync with the
         // utterance even though we're not running the normal service_playback.
@@ -1217,14 +1243,22 @@ private:
         const std::uint32_t start_ms = now_ms();
         std::size_t pos = 0;
         std::size_t next = 0;
+        bool i2s_dropped = false;
         while (pos < pcm.size()) {
             if (M5.Speaker.isPlaying(kSpeakerChannel) < kSegmentBuffers - 1) {
                 const std::size_t n = std::min(kSegmentSamples, pcm.size() - pos);
                 std::memcpy(seg_buf_[next], pcm.data() + pos, n * sizeof(std::int16_t));
-                M5.Speaker.playRaw(seg_buf_[next], n, kKatakotoRate, /*stereo=*/false,
-                                   /*repeat=*/1, kSpeakerChannel, /*stop_current_sound=*/false);
-                pos += n;
-                next = (next + 1) % kSegmentBuffers;
+                if (!M5.Speaker.playRaw(seg_buf_[next], n, kKatakotoRate, /*stereo=*/false,
+                                        /*repeat=*/1, kSpeakerChannel, /*stop_current_sound=*/false)) {
+                    if (!M5.Speaker.isRunning()) {
+                        ESP_LOGW(kTag, "katakoto: speaker I2S dropped");
+                        i2s_dropped = true;
+                        break;
+                    }
+                } else {
+                    pos += n;
+                    next = (next + 1) % kSegmentBuffers;
+                }
             }
             update_mouth_from_envelope(now_ms() - start_ms);
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -1237,6 +1271,9 @@ private:
         M5.Speaker.end();
         vTaskDelay(kI2sSettle);
         state_.face.mouth_open.store(0.0f, std::memory_order_relaxed);
+        if (i2s_dropped) {
+            return R"({"ok":false,"error":"speaker i2s"})";
+        }
         return R"({"ok":true})";
     }
 
