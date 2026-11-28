@@ -316,27 +316,10 @@ public:
 
     // --- Cross-cutting coordination flags (top-level by design) ------------
 
-    // Cooperative quiesce for camera sessions. Two independent hazards:
-    //
-    // 1) I2C: the GC0308's SCCB shares the physical bus (G11/G12) AND the
-    //    I2C controller with m5::In_I2C, but through a different software
-    //    stack (IDF i2c_master vs lgfx's register-level driver). Any In_I2C
-    //    access while esp_camera is initialised re-inits the controller
-    //    under the SCCB driver's feet → SCCB_Write fails
-    //    ESP_ERR_INVALID_STATE (the historical "camera vs touch/led race").
-    //
-    // 2) PSRAM bandwidth: the camera EDMA writes frames into a PSRAM fb.
-    //    At RGB565 (2 B/px) the write rate collides with the render task's
-    //    full-screen PSRAM sprite traffic (compose + push at 30 fps) and
-    //    frames arrive torn — confirmed on hardware as bands of corrupt
-    //    pixels interleaved with good rows.
-    //
-    // camera_service raises this flag for the duration of its session (the
-    // ONLY writer); the periodic In_I2C users (demo_loop's M5.update /
-    // battery / nadenade / IMU poll, led_task's strip refresh) AND the
-    // render task skip their work while it's set. Sessions are one-shot and
-    // ~1.5 s, so the pause (frozen face, LEDs holding state) is invisible
-    // in normal use.
+    // Pause render and polling loops during camera capture to reduce PSRAM
+    // contention. camera_service is the only writer; every request clears
+    // the flag on exit. I2C bus exclusion comes from M5Unified's shared
+    // transaction mutex, independently of this cooperative pause.
     std::atomic<bool> i2c_quiesce{false};
 
     // Cooperative I2S handoff for BLE audio streaming. CoreS3 shares the
